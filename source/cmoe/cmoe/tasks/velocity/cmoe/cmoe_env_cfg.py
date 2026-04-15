@@ -50,7 +50,6 @@ class CmoeSceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.DomeLightCfg(color=(0.9, 0.9, 0.9), intensity=500.0),
     )
 
-
 ##
 # MDP settings
 ##
