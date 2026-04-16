@@ -551,24 +551,20 @@ def mix1_gap_stairs_terrain(
     terrain_width = cfg.size[0]   # x direction (lateral)
     terrain_length = cfg.size[1]  # y direction (walking direction)
     terrain_depth = 1.0           # depth of ground below surface
-    platform_width = cfg.platform_width
+    start_platform_length = cfg.start_platform_length
     step_width = cfg.step_width   # depth of each step along y
 
     meshes_list = list()
 
-    # -- Ground plane for the entire terrain (at z = 0)
-    ground = make_plane(cfg.size, height=0.0, center_zero=False)
-    meshes_list.append(ground)
-
     # -- Starting platform (safe zone at the beginning, y from 0 to platform_width)
-    start_dim = (terrain_width, platform_width, terrain_depth)
-    start_pos = (terrain_width / 2, platform_width / 2, -terrain_depth / 2)
+    start_dim = (terrain_width, start_platform_length, terrain_depth)
+    start_pos = (terrain_width / 2, start_platform_length / 2, -terrain_depth / 2)
     start_platform = trimesh.creation.box(start_dim, trimesh.transformations.translation_matrix(start_pos))
     meshes_list.append(start_platform)
 
     # -- Generate alternating stairs and gaps along y direction
     # Layout: [platform] [stairs section] [gap] [stairs section] [gap] ... [end platform]
-    y_cursor = platform_width  # start after the initial platform
+    y_cursor = start_platform_length  # start after the initial platform
     num_steps_per_section = cfg.num_steps_per_section
     num_sections = cfg.num_sections
 
@@ -638,8 +634,7 @@ def mix1_gap_stairs_terrain(
         meshes_list.append(end_mesh)
 
     # origin at the starting platform center
-    origin = np.array([terrain_width / 2, platform_width / 2, 0.0])
-
+    origin = np.array([terrain_width / 2, start_platform_length / 2, 0.0])
     return meshes_list, origin
 
 # 混合地形2（Mix2）：为独木桥与台阶的混合地形，包含两项参数，分别是桥体宽度，范围0.5m-1.0m；以及桥上的台阶高度，范围0.1m-0.25m。
@@ -750,7 +745,7 @@ def mix2_bridge_stairs_terrain(
 
     # -- Ground plane (only for the pit areas on either side of the bridge)
     # We add a low ground plane to catch the robot if it falls
-    pit_ground = make_plane(cfg.size, height=-terrain_depth, center_zero=False)
+    pit_ground = make_plane(cfg.size, height=-5.0, center_zero=False)
     meshes_list.append(pit_ground)
 
     # origin at the starting platform center

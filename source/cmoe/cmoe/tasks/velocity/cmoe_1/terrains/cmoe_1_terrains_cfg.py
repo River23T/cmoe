@@ -172,17 +172,16 @@ class MeshRepeatedBoxesTerrainCfg(MeshRepeatedObjectsTerrainCfg):
 
     object_params_start: ObjectCfg = ObjectCfg(
         num_objects=3,
-        height=0.2,                    # 最低障碍高度 0.2m
-        size=(0.1, 2.0),               # 最窄障碍宽度 0.1m，横跨跑道 2.0m
+        height=0.2,
+        size=(0.1, 8.0),  # 横跨整个8m子地形宽度
         max_yx_angle=0.0,
         degrees=True,
     )
-    """The box curriculum parameters at the start of the curriculum."""
 
     object_params_end: ObjectCfg = ObjectCfg(
         num_objects=5,
-        height=0.4,                    # 最高障碍高度 0.4m
-        size=(0.3, 2.0),               # 最宽障碍宽度 0.3m，横跨跑道 2.0m
+        height=0.4,
+        size=(0.3, 8.0),  # 横跨整个8m子地形宽度
         max_yx_angle=0.0,
         degrees=True,
     )
@@ -195,7 +194,7 @@ class HfDiscreteObstaclesTerrainCfg(HfTerrainBaseCfg):
 
     function = cmoe_1_terrains.discrete_obstacles_terrain
 
-    obstacle_height_mode: str = "choice"
+    obstacle_height_mode: str = "fixed"
     """The mode to use for the obstacle height. Defaults to "choice".
 
     The following modes are supported: "choice", "fixed".
@@ -229,7 +228,7 @@ class MeshMix1TerrainCfg(SubTerrainBaseCfg):
     step_width: float = 0.3
     """The depth of each step along the walking direction (in m)."""
 
-    platform_width: float = 1.0
+    start_platform_length: float = 1.0
     """The length of the starting safe zone along the walking direction (in m)."""
 
     num_steps_per_section: int = 3
