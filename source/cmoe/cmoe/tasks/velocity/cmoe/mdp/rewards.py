@@ -40,7 +40,7 @@ def track_lin_vel_xy_exp(
     )
     return torch.exp(-lin_vel_error / std**2)
 
-# 2.航向跟踪（yaw tracking）
+# 2.航向跟踪（yaw tracking）（自定义）
 # ----- [#2] Yaw tracking (L1 inside exp, no σ) -----
 def track_ang_vel_z_exp_l1(
     env: ManagerBasedRLEnv,
@@ -108,7 +108,7 @@ def base_height_l2(
     # Compute the L2 squared penalty
     return torch.square(asset.data.root_pos_w[:, 2] - adjusted_target_height)
 
-# 7.足部绊脚（feet stumble）
+# 7.足部绊脚（feet stumble）（自定义）
 # ----- [#7] Feet stumble -----
 def feet_stumble(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     """Paper: ⋁_{i∈feet} {‖F_{i,xy}‖₂ > 3·|F_{i,z}|}, weight -1.0.
@@ -135,7 +135,7 @@ def undesired_contacts(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: Sce
     # sum over contacts for each environment
     return torch.sum(is_contact, dim=1)
 
-# 9.足部间距（feet distance）
+# 9.足部间距（feet distance）（自定义）
 # ----- [#9] Feet lateral distance -----
 def feet_lateral_distance(
     env: ManagerBasedRLEnv,
@@ -159,7 +159,7 @@ def feet_lateral_distance(
     feet_y_dist = torch.abs(foot_vec_b[:, 1])                  # [N]
     return torch.clamp(feet_y_dist - d_min, max=d_max - d_min)
 
-# 10.足部腾空时间（feet air time）
+# 10.足部腾空时间（feet air time）（自定义）
 # ----- [#10] Feet air time -----
 def feet_air_time(
     env: ManagerBasedRLEnv,
@@ -182,7 +182,7 @@ def feet_air_time(
     cmd_active = (torch.norm(cmd[:, :2], dim=1) + torch.abs(cmd[:, 2])) > 0.1
     return reward * cmd_active.float()
 
-# 11.足部地面平行度（feet ground parallel）
+# 11.足部地面平行度（feet ground parallel）（自定义）
 # ----- [#11] Feet ground parallel -----
 def feet_ground_parallel(
     env: ManagerBasedRLEnv,
@@ -222,7 +222,7 @@ def feet_ground_parallel(
     z_var = corners_w[..., 2].var(dim=2)                        # [N, F]
     return torch.sum(z_var, dim=1)
 
-# 12.髋关节自由度误差（hip dof error）
+# 12.髋关节自由度误差（hip dof error）（自定义）
 # ----- [#12] Hip joint deviation, L2 -----
 def joint_deviation_l2(
     env: ManagerBasedRLEnv,
@@ -325,7 +325,7 @@ def joint_vel_limits(
     out_of_limits = out_of_limits.clip_(min=0.0, max=1.0)
     return torch.sum(out_of_limits, dim=1)
 
-# 19.扭矩限制（torque limits）
+# 19.扭矩限制（torque limits）（自定义）
 # ----- [#19] Torque-limit penalty (paper formula) -----
 def applied_torque_limits_paper(
     env: ManagerBasedRLEnv,
@@ -345,7 +345,7 @@ def applied_torque_limits_paper(
     out_of_limits = torch.abs(applied_torque) - torque_max
     return torch.sum(out_of_limits.clip(min=0.0), dim=1)
 
-# 20.足部边缘触地（feet edge）
+# 20.足部边缘触地（feet edge）（自定义）
 # ----- [#20] Feet edge -----
 def feet_edge(
     env: ManagerBasedRLEnv,

@@ -3,10 +3,10 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Configuration for custom terrains - Evaluation."""
+"""Configuration for custom terrains."""
 
-import source.cmoe.cmoe.tasks.velocity.cmoe.mdp.terrains as cmoe_1_terrains_gen
-from source.cmoe.cmoe.tasks.velocity.cmoe.mdp.terrains.cmoe_1_terrains_cfg import (
+import source.cmoe.cmoe.tasks.velocity.cmoe.terrains as cmoe_1_terrains_gen
+from source.cmoe.cmoe.tasks.velocity.cmoe.terrains.cmoe_1_terrains_cfg import (
     HfPyramidSlopedTerrainCfg,
     HfInvertedPyramidSlopedTerrainCfg,
     MeshPyramidStairsTerrainCfg,
@@ -20,7 +20,7 @@ from source.cmoe.cmoe.tasks.velocity.cmoe.mdp.terrains.cmoe_1_terrains_cfg impor
 
 from isaaclab.terrains.terrain_generator_cfg import TerrainGeneratorCfg
 
-CMOE1_EVALUATE_TERRAINS_CFG = TerrainGeneratorCfg(
+CMOE1_TERRAINS_CFG = TerrainGeneratorCfg(
     curriculum=True,
     size=(8.0, 8.0),
     border_width=5.0,
@@ -29,13 +29,13 @@ CMOE1_EVALUATE_TERRAINS_CFG = TerrainGeneratorCfg(
     horizontal_scale=0.1,
     vertical_scale=0.005,
     slope_threshold=0.75,
-    difficulty_range=(1.0, 1.0),  # 评估时固定最高难度
+    difficulty_range=(0.0, 1.0),
     use_cache=False,
     sub_terrains={
         # 1. 上坡 Slope Up: 0-20°
         "SlopeUp": HfPyramidSlopedTerrainCfg(
             function=cmoe_1_terrains_gen.pyramid_sloped_terrain,
-            slope_range=(0.0, 0.364),
+            slope_range=(0.0, 0.364),   # tan(0°) ~ tan(20°)
             platform_width=0.5,
             inverted=False,
             border_width=0.5,
@@ -124,4 +124,4 @@ CMOE1_EVALUATE_TERRAINS_CFG = TerrainGeneratorCfg(
         ),
     },
 )
-"""CMoE paper terrains configuration for evaluation (max difficulty)."""
+"""CMoE paper terrains configuration for training."""

@@ -36,7 +36,7 @@ from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 from unitree_rl_lab.assets.robots.unitree import UNITREE_G1_29DOF_CFG as ROBOT_CFG
 
 # CMoE's custom terrains (the 9-terrain generator built in previous sessions)
-from source.cmoe.cmoe.tasks.velocity.cmoe.mdp.terrains import CMOE1_TERRAINS_CFG
+from source.cmoe.cmoe.tasks.velocity.cmoe.terrains import CMOE1_TERRAINS_CFG
 
 from . import mdp
 
@@ -150,7 +150,7 @@ class ActionsCfg:
 class ObservationsCfg:
     @configclass
     class PolicyCfg(ObsGroup):
-        """Proprioception. Paper Eq. 2: o_t = [ω_t, g_t, c_v, θ_t, θ̇_t, a_{t-1}]."""
+        """Proprioception. Paper Eq. 2: (1)o_t = [1.ω_t,2.g_t,3.c_v,4.θ_t,5.θ̇_t,6.a_{t-1}]."""
         base_ang_vel     = ObsTerm(func=mdp.base_ang_vel,       scale=0.2, noise=Unoise(-0.2, 0.2))
         projected_gravity = ObsTerm(func=mdp.projected_gravity,           noise=Unoise(-0.05, 0.05))
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
@@ -165,7 +165,7 @@ class ObservationsCfg:
 
     @configclass
     class CriticCfg(ObsGroup):
-        """Privileged critic inputs (paper Fig. 3: o_t^P)."""
+        """Privileged critic inputs (paper Fig. 3: (3)o_t^P)."""
         base_lin_vel      = ObsTerm(func=mdp.base_lin_vel)
         base_ang_vel      = ObsTerm(func=mdp.base_ang_vel, scale=0.2)
         projected_gravity = ObsTerm(func=mdp.projected_gravity)
@@ -180,7 +180,7 @@ class ObservationsCfg:
 
     @configclass
     class ElevationCfg(ObsGroup):
-        """Elevation map e_t. Paper §III-C: encoded by the AE into z^E_t."""
+        """Elevation map (2)e_t. Paper §III-C: encoded by the AE into z^E_t."""
         height_scan = ObsTerm(
             func=mdp.height_scan,
             params={"sensor_cfg": SceneEntityCfg("height_scanner")},

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from . import cmoe_1_terrains_cfg
 
-# 斜坡（Slope）：描述为坡度角，参数范围0-20°。
+# 斜坡（Slope）：描述为坡度角，参数范围0-20°。（上下坡）
 @height_field_to_mesh
 def pyramid_sloped_terrain(difficulty: float, cfg: cmoe_1_terrains_cfg.HfPyramidSlopedTerrainCfg) -> np.ndarray:
     """Generate a terrain with a truncated pyramid structure.
@@ -524,7 +524,7 @@ def discrete_obstacles_terrain(difficulty: float, cfg: cmoe_1_terrains_cfg.HfDis
     # round off the heights to the nearest vertical step
     return np.rint(hf_raw).astype(np.int16)
 
-# 混合地形1（Mix1）：为沟壑与台阶的混合地形，包含两项参数，分别是沟壑宽度，范围0.1m-0.8m；以及台阶高度，范围0.1m-0.15m。
+# 混合地形1（Mix1）：为沟壑与台阶的混合地形，包含两项参数，分别是沟壑宽度，范围0.1m-0.8m；以及台阶高度，范围0.1m-0.15m。(自定义)
 def mix1_gap_stairs_terrain(
     difficulty: float, cfg: cmoe_1_terrains_cfg.MeshMix1TerrainCfg
 ) -> tuple[list[trimesh.Trimesh], np.ndarray]:
@@ -634,7 +634,7 @@ def mix1_gap_stairs_terrain(
     origin = np.array([terrain_width / 2, start_platform_length / 2, 0.0])
     return meshes_list, origin
 
-# 混合地形2（Mix2）：为独木桥与台阶的混合地形，包含两项参数，分别是桥体宽度，范围0.5m-1.0m；以及桥上的台阶高度，范围0.1m-0.25m。
+# 混合地形2（Mix2）：为独木桥与台阶的混合地形，包含两项参数，分别是桥体宽度，范围0.5m-1.0m；以及桥上的台阶高度，范围0.1m-0.25m。(自定义)
 def mix2_bridge_stairs_terrain(
     difficulty: float, cfg: cmoe_1_terrains_cfg.MeshMix2TerrainCfg
 ) -> tuple[list[trimesh.Trimesh], np.ndarray]:

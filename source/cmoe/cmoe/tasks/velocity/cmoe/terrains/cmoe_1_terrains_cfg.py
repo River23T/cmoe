@@ -3,7 +3,7 @@ from isaaclab.utils import configclass
 from isaaclab.terrains.sub_terrain_cfg import SubTerrainBaseCfg
 import math
 from isaaclab.terrains.height_field.hf_terrains_cfg import HfTerrainBaseCfg
-import source.cmoe.cmoe.tasks.velocity.cmoe.mdp.terrains as cmoe_1_terrains
+import source.cmoe.cmoe.tasks.velocity.cmoe.terrains as cmoe_1_terrains
 from typing import Literal
 import warnings
 
