@@ -36,7 +36,7 @@ from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 from unitree_rl_lab.assets.robots.unitree import UNITREE_G1_29DOF_CFG as ROBOT_CFG
 
 # CMoE's custom terrains (the 9-terrain generator built in previous sessions)
-from source.cmoe.cmoe.tasks.velocity.cmoe.terrains import CMOE1_TERRAINS_CFG
+from .terrains import CMOE_TERRAINS_CFG
 
 from . import mdp
 
@@ -51,8 +51,8 @@ class CmoeSceneCfg(InteractiveSceneCfg):
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="generator",
-        terrain_generator=CMOE1_TERRAINS_CFG,
-        max_init_terrain_level=CMOE1_TERRAINS_CFG.num_rows - 1,
+        terrain_generator=CMOE_TERRAINS_CFG,
+        max_init_terrain_level=CMOE_TERRAINS_CFG.num_rows - 1,
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",

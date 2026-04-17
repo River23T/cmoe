@@ -27,7 +27,7 @@ from isaaclab.terrains.terrain_generator_cfg import TerrainGeneratorCfg
 from isaaclab.terrains.terrain_importer import TerrainImporter
 from isaaclab.utils import configclass
 
-from source.cmoe.cmoe.tasks.velocity.cmoe.terrains.cmoe_1_terrains_cfg import (
+from source.cmoe.cmoe.tasks.velocity.cmoe.terrains.cmoe_terrains_cfg import (
     HfPyramidSlopedTerrainCfg,
     HfInvertedPyramidSlopedTerrainCfg,
     MeshPyramidStairsTerrainCfg,

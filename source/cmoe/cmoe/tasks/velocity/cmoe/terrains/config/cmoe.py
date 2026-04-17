@@ -5,8 +5,8 @@
 
 """Configuration for custom terrains."""
 
-import source.cmoe.cmoe.tasks.velocity.cmoe.terrains as cmoe_1_terrains_gen
-from source.cmoe.cmoe.tasks.velocity.cmoe.terrains.cmoe_1_terrains_cfg import (
+from .. import cmoe_terrains as cmoe_terrains_gen
+from ..cmoe_terrains_cfg import (
     HfPyramidSlopedTerrainCfg,
     HfInvertedPyramidSlopedTerrainCfg,
     MeshPyramidStairsTerrainCfg,
@@ -20,7 +20,7 @@ from source.cmoe.cmoe.tasks.velocity.cmoe.terrains.cmoe_1_terrains_cfg import (
 
 from isaaclab.terrains.terrain_generator_cfg import TerrainGeneratorCfg
 
-CMOE1_TERRAINS_CFG = TerrainGeneratorCfg(
+CMOE_TERRAINS_CFG = TerrainGeneratorCfg(
     curriculum=True,
     size=(8.0, 8.0),
     border_width=5.0,
@@ -34,7 +34,7 @@ CMOE1_TERRAINS_CFG = TerrainGeneratorCfg(
     sub_terrains={
         # 1. 上坡 Slope Up: 0-20°
         "SlopeUp": HfPyramidSlopedTerrainCfg(
-            function=cmoe_1_terrains_gen.pyramid_sloped_terrain,
+            function=cmoe_terrains_gen.pyramid_sloped_terrain,
             slope_range=(0.0, 0.364),   # tan(0°) ~ tan(20°)
             platform_width=0.5,
             inverted=False,
@@ -42,7 +42,7 @@ CMOE1_TERRAINS_CFG = TerrainGeneratorCfg(
         ),
         # 2. 下坡 Slope Down: 0-20°
         "SlopeDown": HfInvertedPyramidSlopedTerrainCfg(
-            function=cmoe_1_terrains_gen.pyramid_sloped_terrain,
+            function=cmoe_terrains_gen.pyramid_sloped_terrain,
             slope_range=(0.0, 0.364),
             platform_width=0.5,
             inverted=True,
@@ -50,7 +50,7 @@ CMOE1_TERRAINS_CFG = TerrainGeneratorCfg(
         ),
         # 3. 上台阶 Stair Up: step height 0.05-0.23m
         "StairUp": MeshPyramidStairsTerrainCfg(
-            function=cmoe_1_terrains_gen.pyramid_stairs_terrain,
+            function=cmoe_terrains_gen.pyramid_stairs_terrain,
             step_height_range=(0.05, 0.23),
             step_width=0.3,
             platform_width=1.0,
@@ -59,7 +59,7 @@ CMOE1_TERRAINS_CFG = TerrainGeneratorCfg(
         ),
         # 4. 下台阶 Stair Down: step height 0.05-0.23m
         "StairDown": MeshInvertedPyramidStairsTerrainCfg(
-            function=cmoe_1_terrains_gen.inverted_pyramid_stairs_terrain,
+            function=cmoe_terrains_gen.inverted_pyramid_stairs_terrain,
             step_height_range=(0.05, 0.23),
             step_width=0.3,
             platform_width=1.0,
@@ -68,14 +68,14 @@ CMOE1_TERRAINS_CFG = TerrainGeneratorCfg(
         ),
         # 5. 沟壑 Gap: width 0.1-0.8m
         "Gap": MeshGapTerrainCfg(
-            function=cmoe_1_terrains_gen.gap_terrain,
+            function=cmoe_terrains_gen.gap_terrain,
             gap_width_range=(0.1, 0.8),
             platform_width=1.0,
         ),
         # 6. 障碍 Hurdle: height 0.2-0.4m, width 0.1-0.3m
         "Hurdle": MeshRepeatedBoxesTerrainCfg(
-            function=cmoe_1_terrains_gen.repeated_objects_terrain,
-            object_type=cmoe_1_terrains_gen.make_box,
+            function=cmoe_terrains_gen.repeated_objects_terrain,
+            object_type=cmoe_terrains_gen.make_box,
             object_params_start=MeshRepeatedBoxesTerrainCfg.ObjectCfg(
                 num_objects=3,
                 height=0.2,
@@ -95,7 +95,7 @@ CMOE1_TERRAINS_CFG = TerrainGeneratorCfg(
         ),
         # 7. 离散凸起 Discrete: height 0.1-0.2m
         "Discrete": HfDiscreteObstaclesTerrainCfg(
-            function=cmoe_1_terrains_gen.discrete_obstacles_terrain,
+            function=cmoe_terrains_gen.discrete_obstacles_terrain,
             obstacle_height_mode="fixed",
             obstacle_width_range=(0.25, 0.75),
             obstacle_height_range=(0.1, 0.2),
@@ -105,7 +105,7 @@ CMOE1_TERRAINS_CFG = TerrainGeneratorCfg(
         ),
         # 8. 混合地形1 Mix1: gap 0.1-0.8m + stairs 0.1-0.15m
         "Mix1": MeshMix1TerrainCfg(
-            function=cmoe_1_terrains_gen.mix1_gap_stairs_terrain,
+            function=cmoe_terrains_gen.mix1_gap_stairs_terrain,
             gap_width_range=(0.1, 0.8),
             step_height_range=(0.1, 0.15),
             step_width=0.3,
@@ -115,7 +115,7 @@ CMOE1_TERRAINS_CFG = TerrainGeneratorCfg(
         ),
         # 9. 混合地形2 Mix2: bridge 0.5-1.0m + stairs 0.1-0.25m
         "Mix2": MeshMix2TerrainCfg(
-            function=cmoe_1_terrains_gen.mix2_bridge_stairs_terrain,
+            function=cmoe_terrains_gen.mix2_bridge_stairs_terrain,
             bridge_width_range=(0.5, 1.0),
             step_height_range=(0.1, 0.25),
             step_width=0.3,

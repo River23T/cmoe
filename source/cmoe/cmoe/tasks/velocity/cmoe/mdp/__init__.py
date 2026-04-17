@@ -27,3 +27,6 @@ name. We therefore import in this order:
 from isaaclab.envs.mdp import *                          # noqa: F401, F403
 from unitree_rl_lab.tasks.locomotion.mdp import *        # noqa: F401, F403
 from .rewards import *                                    # noqa: F401, F403
+from .observations import *
+from .curriculums import *
+from .terminations import *

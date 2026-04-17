@@ -3,7 +3,7 @@ from isaaclab.utils import configclass
 from isaaclab.terrains.sub_terrain_cfg import SubTerrainBaseCfg
 import math
 from isaaclab.terrains.height_field.hf_terrains_cfg import HfTerrainBaseCfg
-import source.cmoe.cmoe.tasks.velocity.cmoe.terrains as cmoe_1_terrains
+from . import cmoe_terrains as cmoe_terrains
 from typing import Literal
 import warnings
 
@@ -12,7 +12,7 @@ import warnings
 class HfPyramidSlopedTerrainCfg(HfTerrainBaseCfg):
     """Configuration for a pyramid sloped height field terrain."""
 
-    function = cmoe_1_terrains.pyramid_sloped_terrain
+    function = cmoe_terrains.pyramid_sloped_terrain
 
     slope_range: tuple[float, float] = (0.0, math.tan(math.radians(20)))# (0.0, 0.364)
     """The slope of the terrain (in radians)."""
@@ -44,7 +44,7 @@ class HfInvertedPyramidSlopedTerrainCfg(HfPyramidSlopedTerrainCfg):
 class MeshPyramidStairsTerrainCfg(SubTerrainBaseCfg):
     """Configuration for a pyramid stair mesh terrain."""
 
-    function = cmoe_1_terrains.pyramid_stairs_terrain
+    function = cmoe_terrains.pyramid_stairs_terrain
 
     border_width: float = 0.0
     """The width of the border around the terrain (in m). Defaults to 0.0.
@@ -78,14 +78,14 @@ class MeshInvertedPyramidStairsTerrainCfg(MeshPyramidStairsTerrainCfg):
         This is the same as :class:`MeshPyramidStairsTerrainCfg` except that the steps are inverted.
     """
 
-    function = cmoe_1_terrains.inverted_pyramid_stairs_terrain
+    function = cmoe_terrains.inverted_pyramid_stairs_terrain
 
 # 沟壑（Gap）：描述为沟体宽度，参数范围0.1m-0.8m。(isaaclab环形沟，论文横向沟渠)
 @configclass
 class MeshGapTerrainCfg(SubTerrainBaseCfg):
     """Configuration for a terrain with a gap around the platform."""
 
-    function = cmoe_1_terrains.gap_terrain
+    function = cmoe_terrains.gap_terrain
 
     gap_width_range: tuple[float, float] = (0.1,0.8)
     """The minimum and maximum width of the gap (in m)."""
@@ -107,7 +107,7 @@ class MeshRepeatedObjectsTerrainCfg(SubTerrainBaseCfg):
         height: float = MISSING
         """The height (along z) of the object (in m)."""
 
-    function = cmoe_1_terrains.repeated_objects_terrain
+    function = cmoe_terrains.repeated_objects_terrain
 
     object_type: Literal["cylinder", "box", "cone"] | callable = "box"
     """The type of object to generate.
@@ -167,7 +167,7 @@ class MeshRepeatedBoxesTerrainCfg(MeshRepeatedObjectsTerrainCfg):
         degrees: bool = True
         """Whether the angle is in degrees. Defaults to True."""
 
-    object_type = cmoe_1_terrains.make_box
+    object_type = cmoe_terrains.make_box
 
     object_params_start: ObjectCfg = ObjectCfg(
         num_objects=3,
@@ -191,7 +191,7 @@ class MeshRepeatedBoxesTerrainCfg(MeshRepeatedObjectsTerrainCfg):
 class HfDiscreteObstaclesTerrainCfg(HfTerrainBaseCfg):
     """Configuration for a discrete obstacles height field terrain."""
 
-    function = cmoe_1_terrains.discrete_obstacles_terrain
+    function = cmoe_terrains.discrete_obstacles_terrain
 
     obstacle_height_mode: str = "fixed"
     """The mode to use for the obstacle height. Defaults to "choice".
@@ -216,7 +216,7 @@ class HfDiscreteObstaclesTerrainCfg(HfTerrainBaseCfg):
 class MeshMix1TerrainCfg(SubTerrainBaseCfg):
     """Configuration for Mix1: mixed terrain of gaps and stairs."""
 
-    function = cmoe_1_terrains.mix1_gap_stairs_terrain
+    function = cmoe_terrains.mix1_gap_stairs_terrain
 
     gap_width_range: tuple[float, float] = (0.1, 0.8)
     """The minimum and maximum width of the gaps (in m). Paper Table I: 0.1-0.8m"""
@@ -241,7 +241,7 @@ class MeshMix1TerrainCfg(SubTerrainBaseCfg):
 class MeshMix2TerrainCfg(SubTerrainBaseCfg):
     """Configuration for Mix2: mixed terrain of single-log bridge and stairs."""
 
-    function = cmoe_1_terrains.mix2_bridge_stairs_terrain
+    function = cmoe_terrains.mix2_bridge_stairs_terrain
 
     bridge_width_range: tuple[float, float] = (0.5, 1.0)
     """The minimum and maximum width of the bridge (in m). Paper Table I: 0.5-1.0m.

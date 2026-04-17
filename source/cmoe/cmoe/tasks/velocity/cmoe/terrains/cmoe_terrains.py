@@ -7,11 +7,11 @@ from isaaclab.terrains.height_field.utils import height_field_to_mesh
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from . import cmoe_1_terrains_cfg
+    from . import cmoe_terrains_cfg
 
 # 斜坡（Slope）：描述为坡度角，参数范围0-20°。（上下坡）
 @height_field_to_mesh
-def pyramid_sloped_terrain(difficulty: float, cfg: cmoe_1_terrains_cfg.HfPyramidSlopedTerrainCfg) -> np.ndarray:
+def pyramid_sloped_terrain(difficulty: float, cfg: cmoe_terrains_cfg.HfPyramidSlopedTerrainCfg) -> np.ndarray:
     """Generate a terrain with a truncated pyramid structure.
 
     The terrain is a pyramid-shaped sloped surface with a slope of :obj:`slope` that trims into a flat platform
@@ -80,7 +80,7 @@ def pyramid_sloped_terrain(difficulty: float, cfg: cmoe_1_terrains_cfg.HfPyramid
 
 # 上台阶（Stair up）：描述为台阶高度，参数范围0.05m-0.23m。
 def pyramid_stairs_terrain(
-    difficulty: float, cfg: cmoe_1_terrains_cfg.MeshPyramidStairsTerrainCfg
+    difficulty: float, cfg: cmoe_terrains_cfg.MeshPyramidStairsTerrainCfg
 ) -> tuple[list[trimesh.Trimesh], np.ndarray]:
     """Generate a terrain with a pyramid stair pattern.
 
@@ -180,7 +180,7 @@ def pyramid_stairs_terrain(
 
 # 下台阶（Stair down）：描述为台阶高度，参数范围0.05m-0.23m。
 def inverted_pyramid_stairs_terrain(
-    difficulty: float, cfg: cmoe_1_terrains_cfg.MeshInvertedPyramidStairsTerrainCfg
+    difficulty: float, cfg: cmoe_terrains_cfg.MeshInvertedPyramidStairsTerrainCfg
 ) -> tuple[list[trimesh.Trimesh], np.ndarray]:
     """Generate a terrain with a inverted pyramid stair pattern.
 
@@ -280,7 +280,7 @@ def inverted_pyramid_stairs_terrain(
 
 # 沟壑（Gap）：描述为沟体宽度，参数范围0.1m-0.8m。
 def gap_terrain(
-    difficulty: float, cfg: cmoe_1_terrains_cfg.MeshGapTerrainCfg
+    difficulty: float, cfg: cmoe_terrains_cfg.MeshGapTerrainCfg
 ) -> tuple[list[trimesh.Trimesh], np.ndarray]:
     """Generate a terrain with a gap around the platform.
 
@@ -322,7 +322,7 @@ def gap_terrain(
 
 # 障碍（Hurdle）：包含两项参数，分别是障碍高度，范围0.2m-0.4m；以及障碍宽度，范围0.1m-0.3m。
 def repeated_objects_terrain(
-    difficulty: float, cfg: cmoe_1_terrains_cfg.MeshRepeatedObjectsTerrainCfg
+    difficulty: float, cfg: cmoe_terrains_cfg.MeshRepeatedObjectsTerrainCfg
 ) -> tuple[list[trimesh.Trimesh], np.ndarray]:
     """Generate a terrain with a set of repeated objects.
 
@@ -355,7 +355,7 @@ def repeated_objects_terrain(
         ValueError: If the object type is not supported. It must be either a string or a callable.
     """
     # import the object functions -- this is done here to avoid circular imports
-    from . import cmoe_1_terrains_cfg as _cfg
+    from . import cmoe_terrains_cfg as _cfg
     MeshRepeatedBoxesTerrainCfg = _cfg.MeshRepeatedBoxesTerrainCfg
 
     # if object type is a string, get the function: make_{object_type}
@@ -447,7 +447,7 @@ def repeated_objects_terrain(
 
 # 离散凸起地形（Discrete）：描述为不规则凸起高度，参数范围0.1m-0.2m。
 @height_field_to_mesh
-def discrete_obstacles_terrain(difficulty: float, cfg: cmoe_1_terrains_cfg.HfDiscreteObstaclesTerrainCfg) -> np.ndarray:
+def discrete_obstacles_terrain(difficulty: float, cfg: cmoe_terrains_cfg.HfDiscreteObstaclesTerrainCfg) -> np.ndarray:
     """Generate a terrain with randomly generated obstacles as pillars with positive and negative heights.
 
     The terrain is a flat platform at the center of the terrain with randomly generated obstacles as pillars
@@ -526,7 +526,7 @@ def discrete_obstacles_terrain(difficulty: float, cfg: cmoe_1_terrains_cfg.HfDis
 
 # 混合地形1（Mix1）：为沟壑与台阶的混合地形，包含两项参数，分别是沟壑宽度，范围0.1m-0.8m；以及台阶高度，范围0.1m-0.15m。(自定义)
 def mix1_gap_stairs_terrain(
-    difficulty: float, cfg: cmoe_1_terrains_cfg.MeshMix1TerrainCfg
+    difficulty: float, cfg: cmoe_terrains_cfg.MeshMix1TerrainCfg
 ) -> tuple[list[trimesh.Trimesh], np.ndarray]:
     """Generate a mixed terrain with alternating gaps and stairs along the walking direction.
 
@@ -636,7 +636,7 @@ def mix1_gap_stairs_terrain(
 
 # 混合地形2（Mix2）：为独木桥与台阶的混合地形，包含两项参数，分别是桥体宽度，范围0.5m-1.0m；以及桥上的台阶高度，范围0.1m-0.25m。(自定义)
 def mix2_bridge_stairs_terrain(
-    difficulty: float, cfg: cmoe_1_terrains_cfg.MeshMix2TerrainCfg
+    difficulty: float, cfg: cmoe_terrains_cfg.MeshMix2TerrainCfg
 ) -> tuple[list[trimesh.Trimesh], np.ndarray]:
     """Generate a mixed terrain with a narrow bridge that has stairs on it.
 
