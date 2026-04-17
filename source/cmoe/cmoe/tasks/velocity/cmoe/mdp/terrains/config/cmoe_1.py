@@ -5,8 +5,8 @@
 
 """Configuration for custom terrains."""
 
-import source.cmoe.cmoe.tasks.velocity.cmoe_1.terrains as cmoe_1_terrains_gen
-from source.cmoe.cmoe.tasks.velocity.cmoe_1.terrains.cmoe_1_terrains_cfg import (
+import source.cmoe.cmoe.tasks.velocity.cmoe.mdp.terrains as cmoe_1_terrains_gen
+from source.cmoe.cmoe.tasks.velocity.cmoe.mdp.terrains.cmoe_1_terrains_cfg import (
     HfPyramidSlopedTerrainCfg,
     HfInvertedPyramidSlopedTerrainCfg,
     MeshPyramidStairsTerrainCfg,
@@ -109,7 +109,7 @@ CMOE1_TERRAINS_CFG = TerrainGeneratorCfg(
             gap_width_range=(0.1, 0.8),
             step_height_range=(0.1, 0.15),
             step_width=0.3,
-            platform_width=1.0,
+            start_platform_length=1.0,
             num_steps_per_section=3,
             num_sections=5,
         ),

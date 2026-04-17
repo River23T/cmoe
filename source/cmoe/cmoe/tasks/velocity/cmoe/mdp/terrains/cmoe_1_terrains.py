@@ -1,14 +1,11 @@
 from __future__ import annotations
-from shapely.geometry import box
 import numpy as np
 import trimesh
 from isaaclab.terrains.trimesh.utils import *  # noqa: F401, F403
 from isaaclab.terrains.trimesh.utils import make_border, make_plane
 from isaaclab.terrains.height_field.utils import height_field_to_mesh
 from typing import TYPE_CHECKING
-from random import randint
-import scipy.interpolate as interpolate
-from isaaclab.terrains.trimesh.utils import make_box
+
 if TYPE_CHECKING:
     from . import cmoe_1_terrains_cfg
 
