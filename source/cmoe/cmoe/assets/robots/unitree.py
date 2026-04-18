@@ -15,11 +15,10 @@ from isaaclab.actuators import IdealPDActuatorCfg, ImplicitActuatorCfg
 from isaaclab.assets.articulation import ArticulationCfg
 from isaaclab.utils import configclass
 
-from humanoid_locomotion.assets.robots import unitree_actuators
+from source.cmoe.cmoe.assets.robots import unitree_actuators
 
-UNITREE_MODEL_DIR = "D:/github_repositories/unitree_model"  # Replace with the actual path to your unitree_model directory
-# UNITREE_MODEL_DIR = "/home/dwk/unitree_model"
-UNITREE_ROS_DIR = "path/to/unitree_ros"  # Replace with the actual path to your unitree_ros package
+UNITREE_MODEL_DIR = "/root/unitree_model"  # Replace with the actual path to your unitree_model directory
+UNITREE_ROS_DIR = "/root/unitree_ros2/robots"  # Replace with the actual path to your unitree_ros package
 
 
 @configclass
