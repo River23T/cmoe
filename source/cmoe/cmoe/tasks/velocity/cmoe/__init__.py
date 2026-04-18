@@ -5,7 +5,7 @@
 
 import gymnasium as gym
 
-from .config.g1 import agents
+from .config.G1 import agents
 
 ##
 # Register Gym environments.
