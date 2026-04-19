@@ -349,7 +349,8 @@ def applied_torque_limits_paper(
 # ----- [#20] Feet edge -----
 def feet_edge(
     env: ManagerBasedRLEnv,
-    sensor_cfg: SceneEntityCfg,
+    sensor_cfg_left: SceneEntityCfg,
+    sensor_cfg_right: SceneEntityCfg,
     edge_height_threshold: float = 0.02,
 ) -> torch.Tensor:
     """Paper: 1_{foot at edge of terrain}, weight -1.0 (terrain-conditional).
@@ -363,8 +364,11 @@ def feet_edge(
     Use a curriculum/rewards-cfg gating per terrain type — e.g. set the term
     weight to 0 for non-hurdle/gap envs in your env's curriculum manager.
     """
-    sensor: RayCaster = env.scene.sensors[sensor_cfg.name]
-    # ray_hits_w: [N, num_rays_total, 3]; rays grouped by foot in the pattern
-    ray_z = sensor.data.ray_hits_w[..., 2]
-    height_std = ray_z.std(dim=1)
-    return (height_std > edge_height_threshold).float()
+    sensor_left: RayCaster = env.scene.sensors[sensor_cfg_left.name]
+    sensor_right: RayCaster = env.scene.sensors[sensor_cfg_right.name]
+    # ray_hits_w: [N, num_rays, 3]; compute height std under each foot
+    ray_z_left = sensor_left.data.ray_hits_w[..., 2]
+    ray_z_right = sensor_right.data.ray_hits_w[..., 2]
+    edge_left = (ray_z_left.std(dim=1) > edge_height_threshold).float()
+    edge_right = (ray_z_right.std(dim=1) > edge_height_threshold).float()
+    return edge_left + edge_right

@@ -91,8 +91,16 @@ class CmoeSceneCfg(InteractiveSceneCfg):
 
     # per-foot height scanner — used by reward #20 (feet_edge) and can also feed
     # the paper's "feet ground parallel". 5x5 grid at 0.02 m spacing under each foot.
-    foot_height_scanner = RayCasterCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/.*ankle_roll_link",
+    foot_height_scanner_left = RayCasterCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/left_ankle_roll_link",
+        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 0.5)),
+        ray_alignment="yaw",
+        pattern_cfg=patterns.GridPatternCfg(resolution=0.02, size=[0.20, 0.10]),
+        debug_vis=False,
+        mesh_prim_paths=["/World/ground"],
+    )
+    foot_height_scanner_right = RayCasterCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/right_ankle_roll_link",
         offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 0.5)),
         ray_alignment="yaw",
         pattern_cfg=patterns.GridPatternCfg(resolution=0.02, size=[0.20, 0.10]),
@@ -357,7 +365,7 @@ class CmoeRewardsCfg:
     feet_edge = RewTerm(
         func=mdp.feet_edge, weight=-1.0,
         params={
-            "sensor_cfg": SceneEntityCfg("foot_height_scanner"),
+            "sensor_cfg_left": SceneEntityCfg("foot_height_scanner_left"), "sensor_cfg_right": SceneEntityCfg("foot_height_scanner_right"),
             "edge_height_threshold": 0.02,
         },
     )
@@ -437,7 +445,8 @@ class CmoeEnvCfg(ManagerBasedRLEnvCfg):
         # sensor update rates
         self.scene.contact_forces.update_period      = self.sim.dt
         self.scene.height_scanner.update_period      = self.decimation * self.sim.dt
-        self.scene.foot_height_scanner.update_period = self.decimation * self.sim.dt
+        self.scene.foot_height_scanner_left.update_period = self.decimation * self.sim.dt
+        self.scene.foot_height_scanner_right.update_period = self.decimation * self.sim.dt
         # tie terrain-generator curriculum flag to CurriculumCfg
         if getattr(self.curriculum, "terrain_levels", None) is not None:
             if self.scene.terrain.terrain_generator is not None:
