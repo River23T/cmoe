@@ -272,7 +272,7 @@ class EventCfg:
 @configclass
 class CmoeRewardsCfg:
     # [#1]  velocity tracking
-    velocity_tracking = RewTerm(
+    track_lin_vel_xy = RewTerm(
         func=mdp.track_lin_vel_xy_exp, weight=2.0,
         params={"command_name": "base_velocity", "std": 0.5},
     )
