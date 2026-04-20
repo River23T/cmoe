@@ -33,7 +33,7 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 # Unitree's official G1-29DoF robot articulation cfg
-from unitree_rl_lab.assets.robots.unitree import UNITREE_G1_29DOF_CFG as ROBOT_CFG
+from source.cmoe.cmoe.assets.robots.unitree import UNITREE_G1_29DOF_CFG as ROBOT_CFG
 
 # CMoE's custom terrains (the 9-terrain generator built in previous sessions)
 from .terrains import CMOE_TERRAINS_CFG
@@ -159,15 +159,19 @@ class ObservationsCfg:
     @configclass
     class PolicyCfg(ObsGroup):
         """Proprioception. Paper Eq. 2: (1)o_t = [1.ω_t,2.g_t,3.c_v,4.θ_t,5.θ̇_t,6.a_{t-1}]."""
-        base_ang_vel     = ObsTerm(func=mdp.base_ang_vel,       scale=0.2, noise=Unoise(-0.2, 0.2))
-        projected_gravity = ObsTerm(func=mdp.projected_gravity,           noise=Unoise(-0.05, 0.05))
+        base_ang_vel     = ObsTerm(func=mdp.base_ang_vel,       scale=0.2, noise=Unoise(n_min=-0.2, n_max=0.2))
+        projected_gravity = ObsTerm(func=mdp.projected_gravity,           noise=Unoise(n_min=-0.05, n_max=0.05))
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
-        joint_pos_rel    = ObsTerm(func=mdp.joint_pos_rel,                noise=Unoise(-0.01, 0.01))
-        joint_vel_rel    = ObsTerm(func=mdp.joint_vel_rel,      scale=0.05, noise=Unoise(-1.5, 1.5))
+        joint_pos_rel    = ObsTerm(func=mdp.joint_pos_rel,                noise=Unoise(n_min=-0.01, n_max=0.01))
+        joint_vel_rel    = ObsTerm(func=mdp.joint_vel_rel,      scale=0.05, noise=Unoise(n_min=-1.5, n_max=1.5))
         last_action      = ObsTerm(func=mdp.last_action)
 
         def __post_init__(self):
-            self.history_length   = 5      # paper §III-C: "observation history o_t^H"
+            # NOTE: history_length=5 is for the full CMoE model with VAE encoder.
+            # The standard MLP actor-critic cannot handle history stacking properly
+            # (causes NaN in obs normalization → negative std → crash).
+            # Set to 0 for now; re-enable when using the custom CMoE model.
+            self.history_length   = 0      # paper §III-C: "observation history o_t^H"
             self.enable_corruption = True   # paper §IV-B: noise during training
             self.concatenate_terms = True
 
@@ -183,7 +187,7 @@ class ObservationsCfg:
         last_action       = ObsTerm(func=mdp.last_action)
 
         def __post_init__(self):
-            self.history_length   = 5
+            self.history_length   = 0
             self.concatenate_terms = True
 
     @configclass
@@ -193,7 +197,7 @@ class ObservationsCfg:
             func=mdp.height_scan,
             params={"sensor_cfg": SceneEntityCfg("height_scanner")},
             clip=(-1.0, 1.0),
-            noise=Unoise(-0.1, 0.1),   # paper §IV-B: "delay noise and Gaussian noise"
+            noise=Unoise(n_min=-0.1, n_max=0.1),   # paper §IV-B: "delay noise and Gaussian noise"
         )
 
         def __post_init__(self):

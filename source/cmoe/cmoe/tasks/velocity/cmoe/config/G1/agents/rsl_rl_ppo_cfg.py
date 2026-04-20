@@ -5,7 +5,7 @@
 
 """RSL-RL PPO runner config for CMoE G1 velocity training.
 
-Paper §IV-A parameters:
+Paper IV-A parameters:
   - 4096 parallel environments
   - 20,000 epochs (iterations)
   - 5 experts (handled in custom_classes/models/, not here)
@@ -20,7 +20,7 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 
 @configclass
 class CmoePPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    """PPO runner configuration matching CMoE paper §IV-A."""
+    """PPO runner configuration matching CMoE paper IV-A."""
 
     # --- runner ---
     num_steps_per_env = 24           # rollout length per env per iteration
@@ -31,14 +31,11 @@ class CmoePPORunnerCfg(RslRlOnPolicyRunnerCfg):
     logger = "tensorboard"
 
     # --- policy network ---
-    # Note: This is the STANDARD MLP actor-critic for baseline/debugging.
-    # The actual CMoE MoE architecture is in custom_classes/models/cmoe_model.py
-    # and will override this when you plug in the custom runner.
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
-        actor_obs_normalization=True,
-        critic_obs_normalization=True,
-        actor_hidden_dims=[512, 256, 128],    # larger than cartpole's [32,32]
+        actor_obs_normalization=False,
+        critic_obs_normalization=False,
+        actor_hidden_dims=[512, 256, 128],
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
     )
@@ -48,10 +45,10 @@ class CmoePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.01,            # slightly higher entropy for exploration
+        entropy_coef=0.01,
         num_learning_epochs=5,
         num_mini_batches=4,
-        learning_rate=1.0e-4,         # lower LR for stability with 29-DOF humanoid
+        learning_rate=1.0e-4,
         schedule="adaptive",
         gamma=0.99,
         lam=0.95,
@@ -62,6 +59,5 @@ class CmoePPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
 @configclass
 class CmoePPORunnerCfg_PLAY(CmoePPORunnerCfg):
-    """Play/evaluation variant — no training, just inference."""
-    # resume from latest checkpoint (override via --checkpoint CLI arg)
+    """Play/evaluation variant - no training, just inference."""
     resume = True

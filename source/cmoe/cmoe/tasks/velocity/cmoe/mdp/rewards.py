@@ -100,8 +100,11 @@ def base_height_l2(
     asset: RigidObject = env.scene[asset_cfg.name]
     if sensor_cfg is not None:
         sensor: RayCaster = env.scene[sensor_cfg.name]
+        # Clamp ray hits to prevent inf values from missed rays, which would
+        # cause -inf rewards and NaN gradients that completely break training.
+        ray_hits_z = torch.clamp(sensor.data.ray_hits_w[..., 2], min=-5.0, max=5.0)
         # Adjust the target height using the sensor data
-        adjusted_target_height = target_height + torch.mean(sensor.data.ray_hits_w[..., 2], dim=1)
+        adjusted_target_height = target_height + torch.mean(ray_hits_z, dim=1)
     else:
         # Use the provided target height directly for flat terrain
         adjusted_target_height = target_height
@@ -367,8 +370,9 @@ def feet_edge(
     sensor_left: RayCaster = env.scene.sensors[sensor_cfg_left.name]
     sensor_right: RayCaster = env.scene.sensors[sensor_cfg_right.name]
     # ray_hits_w: [N, num_rays, 3]; compute height std under each foot
-    ray_z_left = sensor_left.data.ray_hits_w[..., 2]
-    ray_z_right = sensor_right.data.ray_hits_w[..., 2]
+    # Clamp to prevent inf from missed rays causing NaN in std()
+    ray_z_left = torch.clamp(sensor_left.data.ray_hits_w[..., 2], min=-5.0, max=5.0)
+    ray_z_right = torch.clamp(sensor_right.data.ray_hits_w[..., 2], min=-5.0, max=5.0)
     edge_left = (ray_z_left.std(dim=1) > edge_height_threshold).float()
     edge_right = (ray_z_right.std(dim=1) > edge_height_threshold).float()
     return edge_left + edge_right
