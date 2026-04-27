@@ -1,36 +1,57 @@
-# Copyright (c) 2021-2026, ETH Zurich and NVIDIA CORPORATION
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
+"""Custom PPO with CMoE integration (Paper III-D, III-E).
 
+Based on humanoid_locomotion reference project's custom PPO pattern.
+Uses separate self.actor and self.critic (both MLPModel), then adds
+MoE, estimators, and contrastive learning.
+
+Key: MoE actor/critic are trained through PPO loss in update(),
+not just used during act(). This ensures gradient flow.
+"""
 
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 from itertools import chain
 from tensordict import TensorDict
 
 from rsl_rl.env import VecEnv
-from rsl_rl.extensions import RandomNetworkDistillation, resolve_rnd_config, resolve_symmetry_config
-from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import resolve_callable, resolve_obs_groups, resolve_optimizer
 
+# MLPModel only exists in newer rsl_rl (>=4.0). In rsl_rl 3.3.0 (bundled with
+# IsaacLab 2.x / IsaacSim 5.x) the actor/critic are plain nn.Module subclasses
+# created by the OnPolicyRunner. We only need the name for type hints.
+try:
+    from rsl_rl.models import MLPModel
+except ImportError:
+    MLPModel = nn.Module  # type: ignore[misc,assignment]
+
+try:
+    from rsl_rl.extensions import RandomNetworkDistillation, resolve_rnd_config, resolve_symmetry_config
+except ImportError:
+    RandomNetworkDistillation = None
+    resolve_rnd_config = None
+    resolve_symmetry_config = None
+
+from cmoe.custom_classes.modules import VAEEstimator, AEEstimator
+from cmoe.custom_classes.models.cmoe_moe_model import MoEActorModel, MoECriticModel
+from cmoe.custom_classes.models.cmoe_contrastive import SwAVContrastiveLoss
+
 
 class PPO:
-    """Proximal Policy Optimization algorithm.
+    """PPO with Contrastive Mixture of Experts (CMoE).
 
-    Reference:
-        - Schulman et al. "Proximal policy optimization algorithms." arXiv preprint arXiv:1707.06347 (2017).
+    Architecture (Paper Fig. 3):
+      act():  obs -> AE(elevation)->z_E -> gating(z_E)->g_i
+              obs -> expert_i(obs)->mu_i -> action = sum(softmax(g_i)*mu_i)
+      update(): recompute MoE forward -> PPO loss + contrastive loss + estimator loss
     """
 
     actor: MLPModel
-    """The actor model."""
-
     critic: MLPModel
-    """The critic model."""
 
     def __init__(
         self,
@@ -52,76 +73,42 @@ class PPO:
         desired_kl: float = 0.01,
         normalize_advantage_per_mini_batch: bool = False,
         device: str = "cpu",
-        # RND parameters
         rnd_cfg: dict | None = None,
-        # Symmetry parameters
         symmetry_cfg: dict | None = None,
-        # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
+        cmoe_cfg: dict | None = None,
     ) -> None:
-        """Initialize the algorithm with models, storage, and optimization settings."""
-        # Device-related parameters
         self.device = device
         self.is_multi_gpu = multi_gpu_cfg is not None
+        self.gpu_global_rank = multi_gpu_cfg["global_rank"] if multi_gpu_cfg else 0
+        self.gpu_world_size = multi_gpu_cfg["world_size"] if multi_gpu_cfg else 1
 
-        # Multi-GPU parameters
-        if multi_gpu_cfg is not None:
-            self.gpu_global_rank = multi_gpu_cfg["global_rank"]
-            self.gpu_world_size = multi_gpu_cfg["world_size"]
-        else:
-            self.gpu_global_rank = 0
-            self.gpu_world_size = 1
-
-        # RND components
-        if rnd_cfg:
-            # Extract parameters used in ppo
+        # RND
+        if rnd_cfg and RandomNetworkDistillation is not None:
             rnd_lr = rnd_cfg.pop("learning_rate", 1e-3)
-            # Create RND module
             self.rnd = RandomNetworkDistillation(device=self.device, **rnd_cfg)
-            # Create RND optimizer
-            params = self.rnd.predictor.parameters()
-            self.rnd_optimizer = optim.Adam(params, lr=rnd_lr)
+            self.rnd_optimizer = optim.Adam(self.rnd.predictor.parameters(), lr=rnd_lr)
         else:
             self.rnd = None
             self.rnd_optimizer = None
 
-        # Symmetry components
+        # Symmetry
         if symmetry_cfg is not None:
-            # Check if symmetry is enabled
-            use_symmetry = symmetry_cfg["use_data_augmentation"] or symmetry_cfg["use_mirror_loss"]
-            # Print that we are not using symmetry
-            if not use_symmetry:
-                print("Symmetry not used for learning. We will use it for logging instead.")
-            # Resolve the data augmentation function (supports string names or direct callables)
-            symmetry_cfg["data_augmentation_func"] = resolve_callable(symmetry_cfg["data_augmentation_func"])
-            # Check valid configuration
-            if not callable(symmetry_cfg["data_augmentation_func"]):
-                raise ValueError(
-                    f"Symmetry configuration exists but the function is not callable: "
-                    f"{symmetry_cfg['data_augmentation_func']}"
+            if "data_augmentation_func" in symmetry_cfg:
+                symmetry_cfg["data_augmentation_func"] = resolve_callable(
+                    symmetry_cfg["data_augmentation_func"]
                 )
-            # Check if the policy is compatible with symmetry
-            if actor.is_recurrent or critic.is_recurrent:
-                raise ValueError("Symmetry augmentation is not supported for recurrent policies.")
-            # Store symmetry configuration
             self.symmetry = symmetry_cfg
         else:
             self.symmetry = None
 
-        # PPO components
+        # Base models
         self.actor = actor.to(self.device)
         self.critic = critic.to(self.device)
-
-        # Create the optimizer
-        self.optimizer = resolve_optimizer(optimizer)(
-            list(dict.fromkeys(chain(self.actor.parameters(), self.critic.parameters()))), lr=learning_rate
-        )  # type: ignore
-
-        # Add storage
         self.storage = storage
         self.transition = RolloutStorage.Transition()
 
-        # PPO parameters
+        # PPO params
         self.clip_param = clip_param
         self.num_learning_epochs = num_learning_epochs
         self.num_mini_batches = num_mini_batches
@@ -136,413 +123,389 @@ class PPO:
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
 
-    def act(self, obs: TensorDict) -> torch.Tensor:
-        """Sample actions and store transition data."""
-        # Record the hidden states for recurrent policies
-        self.transition.hidden_states = (self.actor.get_hidden_state(), self.critic.get_hidden_state())
-        # Compute the actions and values
-        self.transition.actions = self.actor(obs, stochastic_output=True).detach()
-        self.transition.values = self.critic(obs).detach()
-        self.transition.actions_log_prob = self.actor.get_output_log_prob(self.transition.actions).detach()  # type: ignore
-        self.transition.distribution_params = tuple(p.detach() for p in self.actor.output_distribution_params)
-        # Record observations before env.step()
-        self.transition.observations = obs
-        return self.transition.actions  # type: ignore
+        # CMoE components
+        self.moe_actor = None
+        self.moe_critic = None
+        self.vae_estimator = None
+        self.ae_estimator = None
+        self.contrastive_loss_fn = None
+        self.contrastive_weight = 0.1
+        self.estimator_optimizer = None
 
-    def process_env_step(
-        self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict[str, torch.Tensor]
-    ) -> None:
-        """Record one environment step and update the normalizers."""
-        # Update the normalizers
+        if cmoe_cfg is not None:
+            self._init_cmoe(cmoe_cfg)
+
+        # Main optimizer: base actor/critic + MoE + contrastive
+        all_params = list(self.actor.parameters()) + list(self.critic.parameters())
+        if self.moe_actor is not None:
+            all_params += list(self.moe_actor.parameters())
+        if self.moe_critic is not None:
+            all_params += list(self.moe_critic.parameters())
+        if self.contrastive_loss_fn is not None:
+            all_params += list(self.contrastive_loss_fn.parameters())
+        seen = set()
+        unique = []
+        for p in all_params:
+            if id(p) not in seen:
+                seen.add(id(p))
+                unique.append(p)
+        self.optimizer = resolve_optimizer(optimizer)(unique, lr=learning_rate)
+
+    def _init_cmoe(self, cfg: dict):
+        est_cfg = cfg.get("estimator", {})
+        moe_cfg = cfg.get("moe", {})
+        cont_cfg = cfg.get("contrastive", {})
+
+        # Estimators
+        est_params = []
+        vae_c = est_cfg.get("vae")
+        if vae_c:
+            self.vae_estimator = VAEEstimator(**vae_c).to(self.device)
+            est_params += list(self.vae_estimator.parameters())
+            print(f"[CMoE] VAE: latent={vae_c['latent_dim']}")
+
+        ae_c = est_cfg.get("ae")
+        if ae_c:
+            self.ae_estimator = AEEstimator(**ae_c).to(self.device)
+            est_params += list(self.ae_estimator.parameters())
+            print(f"[CMoE] AE: latent={ae_c['latent_dim']}")
+
+        if est_params:
+            self.estimator_optimizer = optim.Adam(est_params, lr=est_cfg.get("learning_rate", 1e-3))
+
+        # MoE
+        if moe_cfg:
+            n_exp = moe_cfg.get("num_experts", 5)
+            gate_in = moe_cfg.get("gate_input_dim", 32)
+            gate_h = moe_cfg.get("gate_hidden_dims", [64, 32])
+            std0 = moe_cfg.get("init_noise_std", 1.0)
+
+            a_in, a_out, a_h = self._dims(self.actor)
+            c_in, _, c_h = self._dims(self.critic)
+            print(f"[CMoE] Actor: {a_in}->{a_h}->{a_out}, Critic: {c_in}->{c_h}->1")
+
+            self.moe_actor = MoEActorModel(
+                obs_dim=a_in, action_dim=a_out, num_experts=n_exp,
+                expert_hidden_dims=a_h or [512, 256, 128],
+                gate_input_dim=gate_in, gate_hidden_dims=gate_h,
+                init_noise_std=std0,
+            ).to(self.device)
+
+            self.moe_critic = MoECriticModel(
+                obs_dim=c_in, num_experts=n_exp,
+                expert_hidden_dims=c_h or [512, 256, 128],
+                shared_gating=self.moe_actor.gating,
+            ).to(self.device)
+            print(f"[CMoE] MoE: {n_exp} experts, gate_in={gate_in}")
+
+        # Contrastive
+        if cont_cfg and self.moe_actor:
+            self.contrastive_loss_fn = SwAVContrastiveLoss(
+                gate_dim=self.moe_actor.num_experts,
+                elevation_dim=cont_cfg.get("elevation_dim", 32),
+                projection_dim=cont_cfg.get("projection_dim", 64),
+                num_prototypes=cont_cfg.get("num_prototypes", 32),
+                temperature=cont_cfg.get("temperature", 0.2),
+                sinkhorn_iters=cont_cfg.get("sinkhorn_iters", 3),
+            ).to(self.device)
+            self.contrastive_weight = cont_cfg.get("weight", 0.1)
+            print(f"[CMoE] Contrastive: K={cont_cfg.get('num_prototypes',32)}, tau={cont_cfg.get('temperature',0.2)}")
+
+        print("[CMoE] Init complete")
+
+    def _dims(self, m):
+        i = o = None
+        h = []
+        for mod in m.modules():
+            if isinstance(mod, nn.Linear):
+                if i is None: i = mod.in_features
+                o = mod.out_features
+                h.append(mod.out_features)
+        if h: h = h[:-1]
+        return i, o, h
+
+    def _ae_encode(self, obs):
+        """Encode elevation obs through AE, return z_E or None."""
+        e = obs.get("elevation", None)
+        if self.ae_estimator is not None and e is not None:
+            return self.ae_estimator.encode(e), e
+        return None, e
+
+    # ==================================================================
+    def act(self, obs: TensorDict) -> torch.Tensor:
+        self.transition.hidden_states = (self.actor.get_hidden_state(), self.critic.get_hidden_state())
+
+        if self.moe_actor is not None:
+            actor_obs = self.actor.get_obs(obs)
+            z_e, elev_raw = self._ae_encode(obs)
+
+            action_mean = self.moe_actor(actor_obs, z_e)
+            action_std = self.moe_actor.std
+            dist = torch.distributions.Normal(action_mean, action_std)
+            actions = dist.sample()
+            log_prob = dist.log_prob(actions).sum(-1, keepdim=True)
+
+            critic_obs = self.critic.get_obs(obs)
+            gw = self.moe_actor.get_gate_weights()
+            values = self.moe_critic(critic_obs, gw)
+
+            self.transition.actions = actions.detach()
+            self.transition.values = values.detach()
+            self.transition.actions_log_prob = log_prob.detach()
+            self.transition.distribution_params = (
+                action_mean.detach(), action_std.expand_as(action_mean).detach()
+            )
+            self.transition.observations = obs
+            return actions.detach()
+        else:
+            self.transition.actions = self.actor(obs, stochastic_output=True).detach()
+            self.transition.values = self.critic(obs).detach()
+            self.transition.actions_log_prob = self.actor.get_output_log_prob(self.transition.actions).detach()
+            self.transition.distribution_params = tuple(p.detach() for p in self.actor.output_distribution_params)
+            self.transition.observations = obs
+            return self.transition.actions
+
+    def process_env_step(self, obs, rewards, dones, extras):
         self.actor.update_normalization(obs)
         self.critic.update_normalization(obs)
-        if self.rnd:
-            self.rnd.update_normalization(obs)
-
-        # Record the rewards and dones
-        # Note: We clone here because later on we bootstrap the rewards based on timeouts
+        if self.rnd: self.rnd.update_normalization(obs)
         self.transition.rewards = rewards.clone()
         self.transition.dones = dones
-
-        # Compute the intrinsic rewards and add to extrinsic rewards
         if self.rnd:
-            # Compute the intrinsic rewards
             self.intrinsic_rewards = self.rnd.get_intrinsic_reward(obs)
-            # Add intrinsic rewards to extrinsic rewards
             self.transition.rewards += self.intrinsic_rewards
-
-        # Bootstrapping on time outs
         if "time_outs" in extras:
             self.transition.rewards += self.gamma * torch.squeeze(
-                self.transition.values * extras["time_outs"].unsqueeze(1).to(self.device),  # type: ignore
-                1,
+                self.transition.values * extras["time_outs"].unsqueeze(1).to(self.device), 1
             )
-
-        # Record the transition
         self.storage.add_transition(self.transition)
         self.transition.clear()
         self.actor.reset(dones)
         self.critic.reset(dones)
 
-    def compute_returns(self, obs: TensorDict) -> None:
-        """Compute return and advantage targets from stored transitions."""
+    def compute_returns(self, obs: TensorDict):
         st = self.storage
-        # Compute value for the last step
-        last_values = self.critic(obs).detach()
-        # Compute returns and advantages
-        advantage = 0
+        if self.moe_critic is not None:
+            critic_obs = self.critic.get_obs(obs)
+            z_e, _ = self._ae_encode(obs)
+            gw = None
+            if z_e is not None:
+                gl = self.moe_actor.gating(z_e)
+                gw = F.softmax(gl, dim=-1)
+            last_values = self.moe_critic(critic_obs, gw).detach()
+        else:
+            last_values = self.critic(obs).detach()
+
+        adv = 0
         for step in reversed(range(st.num_transitions_per_env)):
-            # If we are at the last step, bootstrap the return value
-            next_values = last_values if step == st.num_transitions_per_env - 1 else st.values[step + 1]
-            # 1 if we are not in a terminal state, 0 otherwise
-            next_is_not_terminal = 1.0 - st.dones[step].float()
-            # TD error: r_t + gamma * V(s_{t+1}) - V(s_t)
-            delta = st.rewards[step] + next_is_not_terminal * self.gamma * next_values - st.values[step]
-            # Advantage: A(s_t, a_t) = delta_t + gamma * lambda * A(s_{t+1}, a_{t+1})
-            advantage = delta + next_is_not_terminal * self.gamma * self.lam * advantage
-            # Return: R_t = A(s_t, a_t) + V(s_t)
-            st.returns[step] = advantage + st.values[step]
-        # Compute the advantages
+            nv = last_values if step == st.num_transitions_per_env - 1 else st.values[step + 1]
+            nnt = 1.0 - st.dones[step].float()
+            delta = st.rewards[step] + nnt * self.gamma * nv - st.values[step]
+            adv = delta + nnt * self.gamma * self.lam * adv
+            st.returns[step] = adv + st.values[step]
         st.advantages = st.returns - st.values
-        # Normalize the advantages if per minibatch normalization is not used
         if not self.normalize_advantage_per_mini_batch:
             st.advantages = (st.advantages - st.advantages.mean()) / (st.advantages.std() + 1e-8)
 
-    def update(self) -> dict[str, float]:
-        """Run optimization epochs over stored batches and return mean losses."""
-        mean_value_loss = 0
-        mean_surrogate_loss = 0
-        mean_entropy = 0
-        # RND loss
-        mean_rnd_loss = 0 if self.rnd else None
-        # Symmetry loss
-        mean_symmetry_loss = 0 if self.symmetry["use_mirror_loss"] else None
+    def update(self):
+        mv = ms = me = mest = mc = 0.0
+        gen = (self.storage.recurrent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
+               if (self.actor.is_recurrent or self.critic.is_recurrent)
+               else self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs))
 
-        # Get mini batch generator
-        if self.actor.is_recurrent or self.critic.is_recurrent:
-            generator = self.storage.recurrent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
-        else:
-            generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
-
-        # Iterate over batches
-        for batch in generator:
-            original_batch_size = batch.observations.batch_size[0]
-
-            # Check if we should normalize advantages per mini batch
+        for batch in gen:
+            obs_bs = batch.observations.batch_size[0]
             if self.normalize_advantage_per_mini_batch:
                 with torch.no_grad():
-                    batch.advantages = (batch.advantages - batch.advantages.mean()) / (batch.advantages.std() + 1e-8)  # type: ignore
+                    batch.advantages = (batch.advantages - batch.advantages.mean()) / (batch.advantages.std() + 1e-8)
 
-            # Perform symmetric augmentation
-            if self.symmetry and self.symmetry["use_data_augmentation"]:
-                # Augmentation using symmetry
-                data_augmentation_func = self.symmetry["data_augmentation_func"]
-                # Returned shape: [batch_size * num_aug, ...]
-                batch.observations, batch.actions = data_augmentation_func(
-                    env=self.symmetry["_env"],
-                    obs=batch.observations,
-                    actions=batch.actions,
-                )
-                # Compute number of augmentations per sample
-                num_aug = int(batch.observations.batch_size[0] / original_batch_size)
-                # Repeat the rest of the batch
-                batch.old_actions_log_prob = batch.old_actions_log_prob.repeat(num_aug, 1)
-                batch.values = batch.values.repeat(num_aug, 1)
-                batch.advantages = batch.advantages.repeat(num_aug, 1)
-                batch.returns = batch.returns.repeat(num_aug, 1)
+            # Recompute with current params
+            if self.moe_actor is not None:
+                actor_obs = self.actor.get_obs(batch.observations)
+                critic_obs = self.critic.get_obs(batch.observations)
+                z_e, _ = self._ae_encode(batch.observations)
 
-            with torch.autocast(device_type=self.device, dtype=torch.bfloat16):
-                # Recompute actions log prob and entropy for current batch of transitions
-                # Note: We need to do this because we updated the policy with the new parameters
-                self.actor(
-                    batch.observations,
-                    masks=batch.masks,
-                    hidden_state=batch.hidden_states[0],
-                    stochastic_output=True,
-                )
-                actions_log_prob = self.actor.get_output_log_prob(batch.actions).float()  # type: ignore
-                values = self.critic(batch.observations, masks=batch.masks, hidden_state=batch.hidden_states[1]).float()
-                # Note: We only keep the distribution parameters and entropy of the first augmentation (the original one)
-                distribution_params = tuple(p[:original_batch_size].float() for p in self.actor.output_distribution_params)
-                entropy = self.actor.output_entropy[:original_batch_size].float()
+                action_mean = self.moe_actor(actor_obs, z_e)
+                action_std = self.moe_actor.std
+                dist = torch.distributions.Normal(action_mean, action_std)
+                alp = dist.log_prob(batch.actions).sum(-1, keepdim=True)
+                ent = dist.entropy().sum(-1)[:obs_bs]
+                gw = self.moe_actor.get_gate_weights()
+                vals = self.moe_critic(critic_obs, gw)
+                dp = (action_mean[:obs_bs], action_std.expand_as(action_mean)[:obs_bs])
+            else:
+                self.actor(batch.observations, masks=batch.masks,
+                           hidden_state=batch.hidden_states[0], stochastic_output=True)
+                alp = self.actor.get_output_log_prob(batch.actions)
+                vals = self.critic(batch.observations, masks=batch.masks, hidden_state=batch.hidden_states[1])
+                dp = tuple(p[:obs_bs] for p in self.actor.output_distribution_params)
+                ent = self.actor.output_entropy[:obs_bs]
 
-            # Compute KL divergence and adapt the learning rate
+            # Adaptive LR
             if self.desired_kl is not None and self.schedule == "adaptive":
                 with torch.inference_mode():
-                    kl = self.actor.get_kl_divergence(batch.old_distribution_params, distribution_params)  # type: ignore
-                    kl_mean = torch.mean(kl)
-
-                    # Reduce the KL divergence across all GPUs
-                    if self.is_multi_gpu:
-                        torch.distributed.all_reduce(kl_mean, op=torch.distributed.ReduceOp.SUM)
-                        kl_mean /= self.gpu_world_size
-
-                    # Update the learning rate only on the main process
+                    if self.moe_actor is not None:
+                        om, os_ = batch.old_distribution_params[0], batch.old_distribution_params[1]
+                        nm, ns_ = dp[0], dp[1]
+                        kl = torch.distributions.kl_divergence(
+                            torch.distributions.Normal(om, os_),
+                            torch.distributions.Normal(nm, ns_)
+                        ).sum(-1).mean()
+                    else:
+                        kl = torch.mean(self.actor.get_kl_divergence(batch.old_distribution_params, dp))
                     if self.gpu_global_rank == 0:
-                        if kl_mean > self.desired_kl * 2.0:
+                        if kl > self.desired_kl * 2.0:
                             self.learning_rate = max(1e-5, self.learning_rate / 1.5)
-                        elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
+                        elif kl < self.desired_kl / 2.0 and kl > 0:
                             self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+                    for pg in self.optimizer.param_groups:
+                        pg["lr"] = self.learning_rate
 
-                    # Update the learning rate for all GPUs
-                    if self.is_multi_gpu:
-                        lr_tensor = torch.tensor(self.learning_rate, device=self.device)
-                        torch.distributed.broadcast(lr_tensor, src=0)
-                        self.learning_rate = lr_tensor.item()
+            # PPO losses
+            ratio = torch.exp(alp - torch.squeeze(batch.old_actions_log_prob))
+            surr = -torch.squeeze(batch.advantages) * ratio
+            surr_c = -torch.squeeze(batch.advantages) * torch.clamp(ratio, 1-self.clip_param, 1+self.clip_param)
+            surr_loss = torch.max(surr, surr_c).mean()
 
-                    # Update the learning rate for all parameter groups
-                    for param_group in self.optimizer.param_groups:
-                        param_group["lr"] = self.learning_rate
-
-            # Surrogate loss
-            ratio = torch.exp(actions_log_prob - torch.squeeze(batch.old_actions_log_prob))  # type: ignore
-            surrogate = -torch.squeeze(batch.advantages) * ratio  # type: ignore
-            surrogate_clipped = -torch.squeeze(batch.advantages) * torch.clamp(  # type: ignore
-                ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
-            )
-            surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
-
-            # Value function loss
             if self.use_clipped_value_loss:
-                value_clipped = batch.values + (values - batch.values).clamp(-self.clip_param, self.clip_param)
-                value_losses = (values - batch.returns).pow(2)
-                value_losses_clipped = (value_clipped - batch.returns).pow(2)
-                value_loss = torch.max(value_losses, value_losses_clipped).mean()
+                vc = batch.values + (vals - batch.values).clamp(-self.clip_param, self.clip_param)
+                vl = (vals - batch.returns).pow(2)
+                vlc = (vc - batch.returns).pow(2)
+                val_loss = torch.max(vl, vlc).mean()
             else:
-                value_loss = (batch.returns - values).pow(2).mean()
+                val_loss = (batch.returns - vals).pow(2).mean()
 
-            loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean()
+            loss = surr_loss + self.value_loss_coef * val_loss - self.entropy_coef * ent.mean()
 
-            # Symmetry loss
-            if self.symmetry["use_mirror_loss"]:
-                # Obtain the symmetric actions
-                # Note: If we did augmentation before then we don't need to augment again
-                if not self.symmetry["use_data_augmentation"]:
-                    data_augmentation_func = self.symmetry["data_augmentation_func"]
-                    batch.observations, _ = data_augmentation_func(
-                        obs=batch.observations, actions=None, env=self.symmetry["_env"]
-                    )
+            # Contrastive (Eq. 8)
+            cl = 0.0
+            if self.contrastive_loss_fn is not None and self.moe_actor is not None and z_e is not None:
+                gl = self.moe_actor.get_gate_logits()
+                if gl is not None:
+                    c_loss = self.contrastive_loss_fn(gl, z_e)
+                    loss = loss + self.contrastive_weight * c_loss
+                    cl = c_loss.item()
 
-                # Actions predicted by the actor for symmetrically-augmented observations
-                mean_actions = self.actor(batch.observations.detach().clone())
-
-                # Compute the symmetrically augmented actions
-                # Note: We are assuming the first augmentation is the original one. We do not use the batch.actions from
-                # earlier since that action was sampled from the distribution. However, the symmetry loss is computed
-                # using the mean of the distribution.
-                action_mean_orig = mean_actions[:original_batch_size]
-                _, actions_mean_symm = data_augmentation_func(
-                    obs=None, actions=action_mean_orig, env=self.symmetry["_env"]
-                )
-
-                # Compute the loss
-                mse_loss = torch.nn.MSELoss()
-                symmetry_loss = mse_loss(
-                    mean_actions[original_batch_size:], actions_mean_symm.detach()[original_batch_size:]
-                )
-                # Add the loss to the total loss
-                if self.symmetry["use_mirror_loss"]:
-                    loss += self.symmetry["mirror_loss_coeff"] * symmetry_loss
-                else:
-                    symmetry_loss = symmetry_loss.detach()
-
-            # RND loss
-            if self.rnd:
-                # Extract the rnd_state
-                with torch.no_grad():
-                    rnd_state = self.rnd.get_rnd_state(batch.observations[:original_batch_size])  # type: ignore
-                    rnd_state = self.rnd.state_normalizer(rnd_state)
-                # Predict the embedding and the target
-                predicted_embedding = self.rnd.predictor(rnd_state)
-                target_embedding = self.rnd.target(rnd_state).detach()
-                # Compute the loss as the mean squared error
-                mseloss = torch.nn.MSELoss()
-                rnd_loss = mseloss(predicted_embedding, target_embedding)
-
-            # Compute the gradients for PPO
             self.optimizer.zero_grad()
             loss.backward()
-            # Compute the gradients for RND
-            if self.rnd:
-                self.rnd_optimizer.zero_grad()
-                rnd_loss.backward()
-
-            # Collect gradients from all GPUs
-            if self.is_multi_gpu:
-                self.reduce_parameters()
-
-            # Apply the gradients for PPO
             nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
             nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
+            if self.moe_actor: nn.utils.clip_grad_norm_(self.moe_actor.parameters(), self.max_grad_norm)
+            if self.moe_critic: nn.utils.clip_grad_norm_(self.moe_critic.parameters(), self.max_grad_norm)
+            if self.contrastive_loss_fn: nn.utils.clip_grad_norm_(self.contrastive_loss_fn.parameters(), self.max_grad_norm)
             self.optimizer.step()
-            # Apply the gradients for RND
-            if self.rnd_optimizer:
-                self.rnd_optimizer.step()
 
-            # Store the losses
-            mean_value_loss += value_loss.item()
-            mean_surrogate_loss += surrogate_loss.item()
-            mean_entropy += entropy.mean().item()
-            # RND loss
-            if mean_rnd_loss is not None:
-                mean_rnd_loss += rnd_loss.item()
-            # Symmetry loss
-            if mean_symmetry_loss is not None:
-                mean_symmetry_loss += symmetry_loss.item()
+            mv += val_loss.item()
+            ms += surr_loss.item()
+            me += ent.mean().item()
+            mc += cl
 
-        # Divide the losses by the number of updates
-        num_updates = self.num_learning_epochs * self.num_mini_batches
-        mean_value_loss /= num_updates
-        mean_surrogate_loss /= num_updates
-        mean_entropy /= num_updates
-        if mean_rnd_loss is not None:
-            mean_rnd_loss /= num_updates
-        if mean_symmetry_loss is not None:
-            mean_symmetry_loss /= num_updates
+        # Estimator training (separate optimizer)
+        if self.estimator_optimizer is not None:
+            self.estimator_optimizer.zero_grad()
+            el = torch.tensor(0.0, device=self.device)
+            try:
+                so = self.storage.observations
+                if so is not None:
+                    if self.vae_estimator is not None:
+                        po = so.get("policy", None)
+                        co = so.get("critic", None)
+                        if po is not None and co is not None:
+                            si = torch.randint(0, po.shape[0], (1,)).item()
+                            vl_gt = co[si][:, :3]
+                            cur = po[si][:, -self.vae_estimator.obs_dim:]
+                            vl, _ = self.vae_estimator.compute_loss(po[si], cur, vl_gt)
+                            el = el + vl
+                    if self.ae_estimator is not None:
+                        eo = so.get("elevation", None)
+                        if eo is not None:
+                            si = torch.randint(0, eo.shape[0], (1,)).item()
+                            al, _ = self.ae_estimator.compute_loss(eo[si])
+                            el = el + al
+                    if el.requires_grad:
+                        el.backward()
+                        if self.vae_estimator: nn.utils.clip_grad_norm_(self.vae_estimator.parameters(), self.max_grad_norm)
+                        if self.ae_estimator: nn.utils.clip_grad_norm_(self.ae_estimator.parameters(), self.max_grad_norm)
+                        self.estimator_optimizer.step()
+                        mest = el.item()
+            except Exception as e:
+                print(f"[CMoE] Estimator warning: {e}")
 
-        # Clear the storage
+        n = self.num_learning_epochs * self.num_mini_batches
         self.storage.clear()
+        return {"value": mv/n, "surrogate": ms/n, "entropy": me/n, "estimator": mest, "contrastive": mc/n}
 
-        # Construct the loss dictionary
-        loss_dict = {
-            "value": mean_value_loss,
-            "surrogate": mean_surrogate_loss,
-            "entropy": mean_entropy,
-        }
-        if self.rnd:
-            loss_dict["rnd"] = mean_rnd_loss
-        if self.symmetry["use_mirror_loss"]:
-            loss_dict["symmetry"] = mean_symmetry_loss
+    def train_mode(self):
+        self.actor.train(); self.critic.train()
+        for m in [self.moe_actor, self.moe_critic, self.vae_estimator, self.ae_estimator, self.contrastive_loss_fn]:
+            if m and isinstance(m, nn.Module): m.train()
 
-        return loss_dict
+    def eval_mode(self):
+        self.actor.eval(); self.critic.eval()
+        for m in [self.moe_actor, self.moe_critic, self.vae_estimator, self.ae_estimator, self.contrastive_loss_fn]:
+            if m and isinstance(m, nn.Module): m.eval()
 
-    def train_mode(self) -> None:
-        """Set train mode for learnable models."""
-        self.actor.train()
-        self.critic.train()
-        if self.rnd:
-            self.rnd.train()
+    def save(self):
+        d = {"actor_state_dict": self.actor.state_dict(), "critic_state_dict": self.critic.state_dict(),
+             "optimizer_state_dict": self.optimizer.state_dict()}
+        for n in ["moe_actor","moe_critic","vae_estimator","ae_estimator","contrastive_loss_fn"]:
+            m = getattr(self, n, None)
+            if m and isinstance(m, nn.Module): d[f"{n}_state_dict"] = m.state_dict()
+        if self.estimator_optimizer: d["estimator_optimizer_state_dict"] = self.estimator_optimizer.state_dict()
+        return d
 
-    def eval_mode(self) -> None:
-        """Set evaluation mode for learnable models."""
-        self.actor.eval()
-        self.critic.eval()
-        if self.rnd:
-            self.rnd.eval()
+    def load(self, ld, lc, strict):
+        if lc is None: lc = {"actor":True,"critic":True,"optimizer":True,"iteration":True}
+        if lc.get("actor"): self.actor.load_state_dict(ld["actor_state_dict"], strict=strict)
+        if lc.get("critic"): self.critic.load_state_dict(ld["critic_state_dict"], strict=strict)
+        if lc.get("optimizer") and "optimizer_state_dict" in ld:
+            try: self.optimizer.load_state_dict(ld["optimizer_state_dict"])
+            except: pass
+        for n in ["moe_actor","moe_critic","vae_estimator","ae_estimator","contrastive_loss_fn"]:
+            k = f"{n}_state_dict"
+            m = getattr(self, n, None)
+            if m and k in ld: m.load_state_dict(ld[k], strict=strict)
+        return lc.get("iteration", False)
 
-    def save(self) -> dict:
-        """Return a dict of all models for saving."""
-        saved_dict = {
-            "actor_state_dict": self.actor.state_dict(),
-            "critic_state_dict": self.critic.state_dict(),
-            "optimizer_state_dict": self.optimizer.state_dict(),
-        }
-        if self.rnd:
-            saved_dict["rnd_state_dict"] = self.rnd.state_dict()
-            saved_dict["rnd_optimizer_state_dict"] = self.rnd_optimizer.state_dict()
-        return saved_dict
-
-    def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
-        """Load specified models from a saved dict."""
-        # If no load_cfg is provided, load all models and states
-        if load_cfg is None:
-            load_cfg = {
-                "actor": True,
-                "critic": True,
-                "optimizer": True,
-                "iteration": True,
-                "rnd": True,
-            }
-
-        # Load the specified models
-        if load_cfg.get("actor"):
-            self.actor.load_state_dict(loaded_dict["actor_state_dict"], strict=strict)
-        if load_cfg.get("critic"):
-            self.critic.load_state_dict(loaded_dict["critic_state_dict"], strict=strict)
-        if load_cfg.get("optimizer"):
-            self.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
-        if load_cfg.get("rnd") and self.rnd:
-            self.rnd.load_state_dict(loaded_dict["rnd_state_dict"], strict=strict)
-            self.rnd_optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
-        return load_cfg.get("iteration", False)
-
-    def get_policy(self) -> MLPModel:
-        """Get the policy model."""
-        return self.actor
+    def get_policy(self): return self.actor
 
     @staticmethod
-    def construct_algorithm(obs: TensorDict, env: VecEnv, cfg: dict, device: str) -> PPO:
-        """Construct the PPO algorithm."""
-        # Resolve class callables
-        alg_class: type[PPO] = resolve_callable(cfg["algorithm"].pop("class_name"))  # type: ignore
-        actor_class: type[MLPModel] = resolve_callable(cfg["actor"].pop("class_name"))  # type: ignore
-        critic_class: type[MLPModel] = resolve_callable(cfg["critic"].pop("class_name"))  # type: ignore
-
-        # Resolve observation groups
-        default_sets = ["actor", "critic"]
-        if "rnd_cfg" in cfg["algorithm"] and cfg["algorithm"]["rnd_cfg"] is not None:
-            default_sets.append("rnd_state")
-        cfg["obs_groups"] = resolve_obs_groups(obs, cfg["obs_groups"], default_sets)
-
-        # Resolve RND config if used
-        cfg["algorithm"] = resolve_rnd_config(cfg["algorithm"], obs, cfg["obs_groups"], env)
-
-        # Resolve symmetry config if used
-        cfg["algorithm"] = resolve_symmetry_config(cfg["algorithm"], env)
-
-        # Initialize the policy
-        actor: MLPModel = actor_class(obs, cfg["obs_groups"], "actor", env.num_actions, **cfg["actor"]).to(device)
+    def construct_algorithm(obs, env, cfg, device):
+        alg_cls = resolve_callable(cfg["algorithm"].pop("class_name"))
+        act_cls = resolve_callable(cfg["actor"].pop("class_name"))
+        crt_cls = resolve_callable(cfg["critic"].pop("class_name"))
+        ds = ["actor","critic"]
+        if cfg["algorithm"].get("rnd_cfg"): ds.append("rnd_state")
+        cfg["obs_groups"] = resolve_obs_groups(obs, cfg["obs_groups"], ds)
+        if resolve_rnd_config: cfg["algorithm"] = resolve_rnd_config(cfg["algorithm"], obs, cfg["obs_groups"], env)
+        if resolve_symmetry_config: cfg["algorithm"] = resolve_symmetry_config(cfg["algorithm"], env)
+        actor = act_cls(obs, cfg["obs_groups"], "actor", env.num_actions, **cfg["actor"]).to(device)
         print(f"Actor Model: {actor}")
-        if cfg["algorithm"].pop("share_cnn_encoders", None):  # Share CNN encoders between actor and critic
-            cfg["critic"]["cnns"] = actor.cnns  # type: ignore
-            cfg["critic"]["mhas"] = actor.mhas  # type: ignore
-            cfg["critic"]["linear"] = actor.linear  # type: ignore
-        critic: MLPModel = critic_class(obs, cfg["obs_groups"], "critic", 1, **cfg["critic"]).to(device)
+        if cfg["algorithm"].pop("share_cnn_encoders", None):
+            cfg["critic"]["cnns"] = actor.cnns
+        critic = crt_cls(obs, cfg["obs_groups"], "critic", 1, **cfg["critic"]).to(device)
         print(f"Critic Model: {critic}")
-
-        # Initialize the storage
         storage = RolloutStorage("rl", env.num_envs, cfg["num_steps_per_env"], obs, [env.num_actions], device)
+        return alg_cls(actor, critic, storage, device=device, **cfg["algorithm"], multi_gpu_cfg=cfg["multi_gpu"])
 
-        # Initialize the algorithm
-        alg: PPO = alg_class(actor, critic, storage, device=device, **cfg["algorithm"], multi_gpu_cfg=cfg["multi_gpu"])
+    def broadcast_parameters(self):
+        mp = [self.actor.state_dict(), self.critic.state_dict()]
+        torch.distributed.broadcast_object_list(mp, src=0)
+        self.actor.load_state_dict(mp[0]); self.critic.load_state_dict(mp[1])
 
-        return alg
-
-    def broadcast_parameters(self) -> None:
-        """Broadcast model parameters to all GPUs."""
-        # Obtain the model parameters on current GPU
-        model_params = [self.actor.state_dict(), self.critic.state_dict()]
-        if self.rnd:
-            model_params.append(self.rnd.predictor.state_dict())
-        # Broadcast the model parameters
-        torch.distributed.broadcast_object_list(model_params, src=0)
-        # Load the model parameters on all GPUs from source GPU
-        self.actor.load_state_dict(model_params[0])
-        self.critic.load_state_dict(model_params[1])
-        if self.rnd:
-            self.rnd.predictor.load_state_dict(model_params[2])
-
-    def reduce_parameters(self) -> None:
-        """Collect gradients from all GPUs and average them.
-
-        This function is called after the backward pass to synchronize the gradients across all GPUs.
-        """
-        # Create a tensor to store the gradients
-        all_params = chain(self.actor.parameters(), self.critic.parameters())
-        if self.rnd:
-            all_params = chain(all_params, self.rnd.parameters())
-        all_params = list(all_params)
-        grads = [param.grad.view(-1) for param in all_params if param.grad is not None]
-        all_grads = torch.cat(grads)
-        # Average the gradients across all GPUs
-        torch.distributed.all_reduce(all_grads, op=torch.distributed.ReduceOp.SUM)
-        all_grads /= self.gpu_world_size
-        # Update the gradients for all parameters with the reduced gradients
-        offset = 0
-        for param in all_params:
-            if param.grad is not None:
-                numel = param.numel()
-                # Copy data back from shared buffer
-                param.grad.data.copy_(all_grads[offset : offset + numel].view_as(param.grad.data))
-                # Update the offset for the next parameter
-                offset += numel
+    def reduce_parameters(self):
+        ap = list(chain(self.actor.parameters(), self.critic.parameters()))
+        if self.moe_actor: ap += list(self.moe_actor.parameters())
+        if self.moe_critic: ap += list(self.moe_critic.parameters())
+        if self.contrastive_loss_fn: ap += list(self.contrastive_loss_fn.parameters())
+        gs = [p.grad.view(-1) for p in ap if p.grad is not None]
+        if gs:
+            ag = torch.cat(gs)
+            torch.distributed.all_reduce(ag, op=torch.distributed.ReduceOp.SUM)
+            ag /= self.gpu_world_size
+            off = 0
+            for p in ap:
+                if p.grad is not None:
+                    n = p.numel()
+                    p.grad.data.copy_(ag[off:off+n].view_as(p.grad.data))
+                    off += n

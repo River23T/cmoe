@@ -10,9 +10,13 @@ import torch.nn as nn
 from tensordict import TensorDict
 
 from rsl_rl.env import VecEnv
-from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import resolve_callable, resolve_obs_groups, resolve_optimizer
+
+try:
+    from rsl_rl.models import MLPModel
+except ImportError:
+    MLPModel = nn.Module  # type: ignore[misc,assignment]
 
 
 class Distillation:

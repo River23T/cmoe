@@ -24,18 +24,43 @@ from isaaclab.sensors import ContactSensor, RayCaster
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
-from isaaclab.utils.math import quat_apply, quat_apply_inverse
+from isaaclab.utils.math import quat_apply, quat_apply_inverse, yaw_quat
 
 # 1.速度跟踪（velocity tracking）
-def track_lin_vel_xy_exp(
+def track_lin_vel_xy_yaw_frame_exp(
     env: ManagerBasedRLEnv, std: float, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:
-    """Reward tracking of linear velocity commands (xy axes) using exponential kernel."""
-    # extract the used quantities (to enable type-hinting)
+    """Reward tracking of linear velocity commands (xy axes) in the robot's
+    YAW frame (i.e. world velocity rotated by yaw only — roll/pitch ignored).
+
+    This matches IsaacLab's official G1/H1 ``track_lin_vel_xy_yaw_frame_exp``:
+        config/g1/rough_env_cfg.py and config/h1/rough_env_cfg.py both call
+        ``mdp.track_lin_vel_xy_yaw_frame_exp`` with std=0.5.
+
+    Why yaw frame, not body frame?
+        On slopes/stairs the robot tilts (non-zero pitch/roll). The body frame
+        x-axis no longer aligns with the world horizontal. A robot walking
+        forward on a 15° slope at 0.8 m/s along the slope direction would have
+        body-frame v_x = 0.8 (good signal), but body frame y/z components also
+        get mixed in by the tilt — and on stair-step impact transients, body
+        frame velocities become very noisy.
+        The yaw frame strips out roll/pitch so the policy is rewarded for
+        making horizontal forward progress, regardless of body tilt.
+
+    Paper Table II:
+        velocity_tracking = exp(-||v_xy - v^c_xy||² / σ),  weight = 2.0
+        Paper does not specify σ; IsaacLab convention σ=0.5 (so σ²=0.25).
+    """
     asset: RigidObject = env.scene[asset_cfg.name]
-    # compute the error
+    # Project world-frame linear velocity into the robot's yaw-only frame.
+    # yaw_quat(quat) returns a quaternion that applies only the yaw rotation.
+    # quat_apply_inverse(yaw_q, world_vel) = yaw-frame velocity (roll/pitch removed).
+    vel_yaw = quat_apply_inverse(
+        yaw_quat(asset.data.root_quat_w),
+        asset.data.root_lin_vel_w[:, :3],
+    )
     lin_vel_error = torch.sum(
-        torch.square(env.command_manager.get_command(command_name)[:, :2] - asset.data.root_lin_vel_b[:, :2]),
+        torch.square(env.command_manager.get_command(command_name)[:, :2] - vel_yaw[:, :2]),
         dim=1,
     )
     return torch.exp(-lin_vel_error / std**2)
@@ -376,3 +401,97 @@ def feet_edge(
     edge_left = (ray_z_left.std(dim=1) > edge_height_threshold).float()
     edge_right = (ray_z_right.std(dim=1) > edge_height_threshold).float()
     return edge_left + edge_right
+
+
+# ----- [#20'] Terrain-conditional feet_edge (Paper §IV-C) -----
+#
+# Paper §IV-C: "the foot edge reward is activated only when the robot is
+# trained in a hurdle or gap environment."
+#
+# The above `feet_edge` does NOT gate by terrain type, causing false
+# penalties on stairs/slopes/mix terrains where foot-under-height std
+# IS naturally > edge_height_threshold (e.g. standing on a step surface
+# near its edge).  This R5 version multiplies by a 0/1 mask derived from
+# the env's current sub-terrain column index.
+#
+# Paper terrain order (see config/cmoe.py sub_terrains dict insertion
+# order): 0=FlatSlope, 1=SlopeUp, 2=SlopeDown, 3=StairUp, 4=StairDown,
+# 5=Gap, 6=Hurdle, 7=Discrete, 8=Mix1, 9=Mix2.
+#
+# IsaacLab's TerrainImporter stores per-env sub-terrain index in
+# `terrain.terrain_types` (Tensor[N], int64). Because `num_cols < len(sub_terrains)`
+# some sub-terrains share columns — but the generator fills columns by
+# proportion and the mapping (column -> terrain_name) can be recovered
+# from `terrain.cfg.terrain_generator.sub_terrains` (OrderedDict).
+#
+# We cache the Gap/Hurdle column mask the first time the reward is
+# evaluated, since sub_terrain->col mapping is static after setup.
+def feet_edge_gated(
+    env: "ManagerBasedRLEnv",
+    sensor_cfg_left: SceneEntityCfg,
+    sensor_cfg_right: SceneEntityCfg,
+    edge_height_threshold: float = 0.02,
+    gap_hurdle_names: tuple = ("Gap", "Hurdle"),
+) -> torch.Tensor:
+    """Paper-faithful feet_edge: active only on Gap and Hurdle sub-terrains.
+
+    Returns 0/1/2 foot-on-edge count, MASKED to zero for envs whose current
+    sub-terrain is not Gap or Hurdle.
+    """
+    sensor_left: RayCaster = env.scene.sensors[sensor_cfg_left.name]
+    sensor_right: RayCaster = env.scene.sensors[sensor_cfg_right.name]
+    ray_z_left = torch.clamp(sensor_left.data.ray_hits_w[..., 2], min=-5.0, max=5.0)
+    ray_z_right = torch.clamp(sensor_right.data.ray_hits_w[..., 2], min=-5.0, max=5.0)
+    edge_left = (ray_z_left.std(dim=1) > edge_height_threshold).float()
+    edge_right = (ray_z_right.std(dim=1) > edge_height_threshold).float()
+    raw = edge_left + edge_right  # [N], values in {0,1,2}
+
+    # Terrain-type mask
+    terrain = env.scene.terrain
+    terrain_types = terrain.terrain_types  # [N], column index per env
+    device = raw.device
+
+    # Build (and cache) the set of column indices that correspond to Gap/Hurdle
+    if not hasattr(env, "_cmoe_gap_hurdle_col_mask"):
+        sub_terrains = terrain.cfg.terrain_generator.sub_terrains  # OrderedDict
+        names = list(sub_terrains.keys())
+        # IsaacLab distributes columns by proportion. The mapping is:
+        #   col_idx -> sub_terrain name
+        # built inside the generator. The most reliable source we have
+        # without internal APIs is to check `sub_terrain_origins` or
+        # `terrain_flat_patches` — but they are not guaranteed across
+        # IsaacLab versions.  So we fall back to an insertion-order
+        # assumption that matches IsaacLab 2.x generator behaviour when
+        # proportions are normalised: col index = floor(i * num_cols /
+        # sum_proportions) for each cumulative proportion boundary.
+        # The cleanest robust way: iterate sub_terrains and use the
+        # same logic IsaacLab uses internally — floor(p * num_cols).
+        num_cols = terrain.cfg.terrain_generator.num_cols
+        # Normalize proportions
+        props = [st.proportion for st in sub_terrains.values()]
+        total = sum(props)
+        # Compute col-count per sub_terrain (matching IsaacLab generator)
+        col_counts = [int(p * num_cols / total) for p in props]
+        # Distribute leftover cols to the largest-proportion sub_terrains
+        leftover = num_cols - sum(col_counts)
+        order = sorted(range(len(props)), key=lambda i: -props[i])
+        for i in range(leftover):
+            col_counts[order[i]] += 1
+        # Build (terrain_name -> set of col indices) mapping
+        col_start = 0
+        name_to_cols = {}
+        for name, n_cols in zip(names, col_counts):
+            name_to_cols[name] = list(range(col_start, col_start + n_cols))
+            col_start += n_cols
+        # Gap/Hurdle cols → boolean mask over col indices
+        target_cols = []
+        for gname in gap_hurdle_names:
+            target_cols.extend(name_to_cols.get(gname, []))
+        col_mask = torch.zeros(num_cols, dtype=torch.bool, device=device)
+        if target_cols:
+            col_mask[torch.tensor(target_cols, device=device)] = True
+        env._cmoe_gap_hurdle_col_mask = col_mask
+
+    # Per-env enabled mask
+    enabled = env._cmoe_gap_hurdle_col_mask[terrain_types].float()
+    return raw * enabled

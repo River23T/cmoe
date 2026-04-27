@@ -5,7 +5,15 @@
 
 """Learning algorithms."""
 
-from .distillation import Distillation
-from .ppo import PPO
+
+def __getattr__(name):
+    if name == "PPO":
+        from .ppo import PPO
+        return PPO
+    if name == "Distillation":
+        from .distillation import Distillation
+        return Distillation
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = ["PPO", "Distillation"]
