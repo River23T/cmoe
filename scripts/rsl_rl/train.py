@@ -15,25 +15,13 @@ import sys
 import cli_args  # isort: skip
 
 # ============================================================
-# R6 train.py CLI changes
-# ============================================================
-# 1. `--max_iterations`: user reported it was interpreted as
-#    "train N more iterations" (rsl_rl default behaviour) instead
-#    of "train until iteration N". R6 adds an explicit --train_to
-#    flag that means "train UNTIL this absolute iteration" so
-#    `--train_to 20000` on a resume from 12600 trains only 7400
-#    more iters. The original `--max_iterations` behaviour is
-#    preserved for backwards compat.
+# Phase 2 train.py — added VAE-only inject path
 #
-# 2. `--init_terrain_level`: override ``max_init_terrain_level``
-#    on the TerrainImporter. When resume is used, IsaacLab
-#    re-creates the scene and all envs start at level 0 by default
-#    (since max_init_terrain_level=0 in env_cfg). But the policy
-#    was trained on level 4-6, so this causes the log to show
-#    terrain_levels dropping back to 0 after resume. Using
-#    `--init_terrain_level 5` spreads envs across level 0..5 on
-#    resume, matching the policy's training regime and letting
-#    the curriculum continue climbing instead of restarting.
+# 与原 train.py 的唯一差别:
+#   原: 看到 cmoe_cfg 就 inject_cmoe (完整 MoE 套件)
+#   新: 看 cmoe_cfg 内容决定:
+#       - 只有 estimator (无 moe, 无 contrastive) → inject_vae_only
+#       - 有 moe → inject_cmoe (原行为)
 # ============================================================
 
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
@@ -48,11 +36,14 @@ parser.add_argument(
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None,
                     help="RL Policy training iterations. When --resume, this is interpreted as ADDITIONAL iters.")
-# R6 NEW FLAGS:
 parser.add_argument("--train_to", type=int, default=None,
-                    help="R6: train UNTIL this absolute iteration (overrides --max_iterations semantics when used with --resume).")
+                    help="train UNTIL this absolute iteration (overrides --max_iterations semantics when used with --resume).")
 parser.add_argument("--init_terrain_level", type=int, default=None,
-                    help="R6: override TerrainImporter.max_init_terrain_level. Crucial after --resume so envs spawn matching the policy's learned regime. Recommended value after a successful R4/R5 training phase: 4-6.")
+                    help="override TerrainImporter.max_init_terrain_level.")
+parser.add_argument("--warm_start_ckpt", type=str, default=None,
+                    help="Path to a checkpoint from a different experiment (e.g. Phase 2a) to warm-start. "
+                         "Different from --resume: --resume continues same experiment dir, "
+                         "--warm_start_ckpt loads weights from another experiment.")
 parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
@@ -141,16 +132,10 @@ def main():
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
     )
 
-    # =====================================================================
-    # R6: override max_init_terrain_level on resume (crucial to preserve
-    # terrain progression across resumes — policy trained on level 4 needs
-    # envs spawned near level 4, not back at 0).
-    # =====================================================================
     if args_cli.init_terrain_level is not None:
         if hasattr(env_cfg, "scene") and hasattr(env_cfg.scene, "terrain"):
             env_cfg.scene.terrain.max_init_terrain_level = args_cli.init_terrain_level
-            print(f"[R6] max_init_terrain_level overridden to {args_cli.init_terrain_level} "
-                  f"(envs will spawn uniformly across levels 0..{args_cli.init_terrain_level})")
+            print(f"[INFO] max_init_terrain_level overridden to {args_cli.init_terrain_level}")
 
     env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
@@ -219,31 +204,94 @@ def main():
     else:
         raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
 
+    # ============================================================
+    # Phase 2b smart inject routing (cmoe_cfg.phase = "2b") + warm-start
+    # ============================================================
+    # 检查 cmoe_cfg 内容决定走哪条 inject 路径:
+    #   - phase == "2b" → Phase 2b (VAE + actor extension)
+    #   - 只有 estimator → Phase 2a (VAE-only)
+    #   - 有 moe → 完整 CMoE (Phase 4+)
+    # ============================================================
     if cmoe_cfg is not None:
-        from cmoe.custom_classes.models.cmoe_inject import inject_cmoe, inject_cmoe_runner_patches
-        inject_cmoe(runner.alg, cmoe_cfg, device=agent_cfg.device)
-        # CRITICAL: patch runner.save/load AFTER inject so MoE weights are persisted
-        inject_cmoe_runner_patches(runner)
+        has_moe = "moe" in cmoe_cfg
+        has_contrastive = "contrastive" in cmoe_cfg
+        has_estimator = "estimator" in cmoe_cfg
+        phase_tag = cmoe_cfg.get("phase", None)
+
+        # IMPORTANT: phase_tag 优先!
+        # 早期版本是 has_moe/has_contrastive 优先, 但这会让 Phase 4
+        # (有 moe + contrastive 字段) 走错路径调到老的 inject_cmoe
+        # (它不知道 per-term 975-dim layout).
+        if phase_tag == "5.1":
+            # Phase 5.1 = Phase 4 architecture + 8 paper terrains (env-only change)
+            # Reuse Phase 4 inject directly — actor/critic/MoE/SwAV 与 Phase 4 完全相同.
+            print("[INFO] Detected phase=5.1, reusing inject_moe_swav (Phase 4 architecture)")
+            from cmoe.tasks.velocity.cmoe_phase4.phase4_inject import (
+                inject_moe_swav, inject_phase4_runner_patches,
+            )
+            inject_moe_swav(runner.alg, cmoe_cfg, device=agent_cfg.device)
+            inject_phase4_runner_patches(runner)
+        elif phase_tag == "4":
+            print("[INFO] Detected phase=4, using inject_moe_swav (Phase 4)")
+            from cmoe.tasks.velocity.cmoe_phase4.phase4_inject import (
+                inject_moe_swav, inject_phase4_runner_patches,
+            )
+            inject_moe_swav(runner.alg, cmoe_cfg, device=agent_cfg.device)
+            inject_phase4_runner_patches(runner)
+        elif phase_tag == "3":
+            print("[INFO] Detected phase=3, using inject_vae_ae_actor (Phase 3)")
+            from cmoe.tasks.velocity.cmoe_phase3.phase3_inject import (
+                inject_vae_ae_actor, inject_phase3_runner_patches,
+            )
+            inject_vae_ae_actor(runner.alg, cmoe_cfg, device=agent_cfg.device)
+            inject_phase3_runner_patches(runner)
+        elif phase_tag == "2b":
+            print("[INFO] Detected phase=2b, using inject_vae_actor (Phase 2b)")
+            from cmoe.tasks.velocity.cmoe_phase2b.phase2b_inject import (
+                inject_vae_actor, inject_phase2b_runner_patches,
+            )
+            inject_vae_actor(runner.alg, cmoe_cfg, device=agent_cfg.device)
+            inject_phase2b_runner_patches(runner)
+        elif has_moe or has_contrastive:
+            # 仅在没有 phase_tag 时回落到 old inject_cmoe (legacy path)
+            print("[INFO] Detected full CMoE config (no phase_tag), using legacy inject_cmoe")
+            from cmoe.custom_classes.models.cmoe_inject import inject_cmoe, inject_cmoe_runner_patches
+            inject_cmoe(runner.alg, cmoe_cfg, device=agent_cfg.device)
+            inject_cmoe_runner_patches(runner)
+        elif has_estimator:
+            print("[INFO] Detected estimator-only config, using inject_vae_only (Phase 2a)")
+            from cmoe.tasks.velocity.cmoe_phase2.phase2_inject import (
+                inject_vae_only, inject_phase2_runner_patches,
+            )
+            inject_vae_only(runner.alg, cmoe_cfg, device=agent_cfg.device)
+            inject_phase2_runner_patches(runner)
+        else:
+            print("[WARN] cmoe_cfg present but no estimator/moe/contrastive — nothing injected")
 
     runner.add_git_repo_to_log(__file__)
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         runner.load(resume_path)
+    elif args_cli.warm_start_ckpt is not None:
+        # Warm-start from another experiment's checkpoint
+        # (e.g. Phase 2a → Phase 2b: load 99-dim actor weights, augment to 134)
+        ws_path = os.path.abspath(args_cli.warm_start_ckpt)
+        print(f"[INFO]: Warm-starting from checkpoint: {ws_path}")
+        if not os.path.isfile(ws_path):
+            raise FileNotFoundError(f"warm_start_ckpt not found: {ws_path}")
+        runner.load(ws_path)
+        # Reset iteration count to 0 (we're starting fresh experiment, just borrowing weights)
+        if hasattr(runner, "current_learning_iteration"):
+            runner.current_learning_iteration = 0
+            print("[INFO]: reset runner.current_learning_iteration = 0 after warm-start")
 
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
 
-    # =====================================================================
-    # R6: train_to vs max_iterations semantics.
-    # rsl_rl.learn(num_learning_iterations=N) trains N MORE iters from
-    # the current counter. If user passed --train_to 20000, interpret
-    # that as "stop when iter counter reaches 20000" and compute the
-    # difference vs current iter.
-    # =====================================================================
     if args_cli.train_to is not None:
         current_iter = getattr(runner, "current_learning_iteration", 0)
         iters_remaining = max(0, args_cli.train_to - current_iter)
-        print(f"[R6] --train_to {args_cli.train_to} specified; current iter = {current_iter}; "
+        print(f"[INFO] --train_to {args_cli.train_to} specified; current iter = {current_iter}; "
               f"will train for {iters_remaining} more iters.")
         runner.learn(num_learning_iterations=iters_remaining, init_at_random_ep_len=True)
     else:
